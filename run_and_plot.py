@@ -83,6 +83,8 @@ def parse_args():
                    help="Random seed for weak coupling generation")
     p.add_argument("--sim-seed", type=int, default=None,
                    help="Random seed for the C++ simulation RNG")
+    p.add_argument("--boltzmann", action="store_true",
+                   help="Enable Boltzmann validation and canonical-state diagram (polymer mode only)")
 
     # Script behaviour
     p.add_argument("--no-run", action="store_true",
@@ -172,18 +174,24 @@ def snake_path(n0):
 
 
 def generate_polymer_bondfile(n0, e_backbone, e_weak, std_weak, path, seed=None):
-    """Generate an extended bond file with backbone + weak couplings at all 4 distance classes.
+    """Generate an extended bond file using confinement-based backbone representation.
 
-    Returns dict of coupling matrices: {'D1': mat, 'Dsq2': mat, 'D2': mat, 'Dsq5': mat}
-    where each mat is a symmetric n0×n0 numpy array.
+    Backbone bonds are NOT encoded as directional attractions.  Instead, for each
+    backbone-bonded pair (i,j) a large repulsive entry is added to wD2 and wDsq5:
+        coupling[i,j] -= e_backbone   (coupling << 0  →  physical energy >> 0  →  repulsive)
+    Combined with the hard-sphere exclusion (d=0 → INF) this confines every bonded
+    pair to d ∈ {1, √2} without any extra C++ machinery.
+
+    A wD0 matrix is returned for display purposes only (d=0 is already INF in C++).
+
+    Returns dict: {'D0': mat, 'D1': mat, 'Dsq2': mat, 'D2': mat, 'Dsq5': mat}
+    All matrices are symmetric n0×n0 numpy arrays (physical energy = -coupling).
     """
     rng = np.random.default_rng(seed)
-    l0 = round(math.sqrt(n0))
 
     backbone_bonds = snake_path(n0)
 
     def sym_matrix(n, mean, std):
-        """Generate a symmetric n×n matrix with N(mean, std) entries (can be negative)."""
         mat = np.zeros((n, n))
         for i in range(n):
             for j in range(i, n):
@@ -196,6 +204,13 @@ def generate_polymer_bondfile(n0, e_backbone, e_weak, std_weak, path, seed=None)
     wDsq2 = sym_matrix(n0, e_weak, std_weak)
     wD2   = sym_matrix(n0, e_weak, std_weak)
     wDsq5 = sym_matrix(n0, e_weak, std_weak)
+    wD0   = np.zeros((n0, n0))  # display-only; C++ returns INF at d=0 regardless
+
+    # Bake confinement into wD2 and wDsq5 for every backbone-bonded pair
+    for (pi, pj) in backbone_bonds:
+        wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
+        wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
+        wD0[pi, pj]   -= e_backbone;  wD0[pj, pi]   -= e_backbone  # visual only
 
     def write_matrix(f, mat, tag):
         f.write(f"{tag}\n")
@@ -207,20 +222,19 @@ def generate_polymer_bondfile(n0, e_backbone, e_weak, std_weak, path, seed=None)
     with open(path, 'w') as f:
         f.write(f"# Extended polymer bond file  n0={n0}  e_backbone={e_backbone}"
                 f"  e_weak={e_weak}  std_weak={std_weak}  seed={seed}\n")
-        f.write(f"# Format: BACKBONE section (strong bonds) + WEAK_D* matrices\n\n")
+        f.write("# Backbone confinement: repulsive wD2/wDsq5 entries for bonded pairs\n")
+        f.write("# (no directional attraction; hard sphere + repulsion confines chain)\n\n")
 
         f.write("BACKBONE\n")
-        for (pi, pj) in backbone_bonds:
-            f.write(f"{pi} {pj} {e_backbone:.6f}\n")
-        f.write("BACKBONE_END\n\n")
+        f.write("BACKBONE_END\n\n")  # empty — confinement handled via wD2/wDsq5
 
         write_matrix(f, wD1,   "WEAK_D1")
         write_matrix(f, wDsq2, "WEAK_DSQRT2")
         write_matrix(f, wD2,   "WEAK_D2")
         write_matrix(f, wDsq5, "WEAK_DSQRT5")
 
-    print(f"Extended bond file written to {path}")
-    return {'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
+    print(f"Extended bond file written to {path}  (confinement via wD2/wDsq5)")
+    return {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
 
 
 def _chain_order(n0):
@@ -243,21 +257,82 @@ def _chain_order(n0):
     return order
 
 
+def _is_power_of_2(n):
+    """Return True if n is a positive power of 2."""
+    return n > 0 and (n & (n - 1)) == 0
+
+
+def _hilbert_d2xy(n, d):
+    """Convert Hilbert curve index d to (x, y) in n×n grid (n must be a power of 2).
+    Consecutive indices always map to positions at Manhattan distance 1 (no overlaps).
+    """
+    x = y = 0
+    s = 1
+    t = d
+    while s < n:
+        rx = 1 & (t // 2)
+        ry = 1 & (t ^ rx)
+        if ry == 0:
+            if rx == 1:
+                x = s - 1 - x
+                y = s - 1 - y
+            x, y = y, x
+        x += s * rx
+        y += s * ry
+        t //= 4
+        s *= 2
+    return x, y
+
+
+def _space_filling_positions(l0):
+    """Return (x, y) positions for l0×l0 grid in space-filling curve order.
+
+    For power-of-2 l0: uses a Hilbert curve (Moore-like space-filling curve) so that
+    consecutive positions are always at Manhattan distance 1 — all backbone bonds are
+    satisfied immediately and particles fill the grid without overlap.
+    For other l0: uses a boustrophedon (snake) path with the same adjacency property.
+    """
+    if _is_power_of_2(l0):
+        return [_hilbert_d2xy(l0, d) for d in range(l0 * l0)]
+    else:
+        positions = []
+        for row in range(l0):
+            cols = range(l0) if row % 2 == 0 else range(l0 - 1, -1, -1)
+            for col in cols:
+                positions.append((col, row))
+        return positions
+
+
 def write_conf_file(path, n0, box_length):
-    """Write initial config: polymer as a horizontal chain centered in the box.
-    Particles are placed in chain sequence order so all backbone bonds start satisfied."""
+    """Write initial polymer config using a space-filling curve.
+
+    For power-of-2 l0 (= sqrt(n0)): uses a Hilbert space-filling curve so that
+    particles consecutive in chain order are at Manhattan distance 1 (backbone bonds
+    immediately satisfied) and the whole chain fits in an l0×l0 footprint with no
+    overlaps.  For other l0 the same is achieved with a snake path.
+    The footprint is centred in the simulation box.
+    """
     L = int(round(box_length))
+    l0 = round(math.sqrt(n0))
     order = _chain_order(n0)
-    x0 = max(0, L // 2 - n0 // 2)
-    y0 = L // 2
-    # Map particle index → initial position (placed in chain order along x)
+
+    sfc_pos = _space_filling_positions(l0)  # n0 grid positions in curve order
+
+    # Centre the l0×l0 footprint in the box
+    x_offset = (L - l0) // 2
+    y_offset = (L - l0) // 2
+
+    # Map particle ID → grid position: order[k] is placed at sfc_pos[k]
     pos = {}
     for chain_idx, pid in enumerate(order):
-        pos[pid] = ((x0 + chain_idx) % L, y0)
+        sx, sy = sfc_pos[chain_idx]
+        pos[pid] = (sx + x_offset, sy + y_offset)
+
     with open(path, 'w') as f:
         for pid in range(n0):
             f.write(f"{pos[pid][0]} {pos[pid][1]}\n")
-    print(f"Initial config written to {path}  ({n0} particles, chain order {order})")
+    curve_name = "Hilbert" if _is_power_of_2(l0) else "snake"
+    print(f"Initial config written to {path}  ({n0} particles, {curve_name} space-filling curve)")
 
 
 def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None):
@@ -441,30 +516,83 @@ def _bond_segments_pbc(cx1, cy1, cx2, cy2, L):
 
 
 def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
-               frames, filehead, e1, custom_bonds=None):
+               frames, filehead, e1, custom_bonds=None, coupling_matrices=None):
+    """Animated simulation viewer.
 
+    If coupling_matrices is provided (polymer mode) the right-hand panel shows the
+    five coupling matrices (D0, D1, Dsq2, D2, Dsq5) as physical-energy heatmaps
+    (blue = attractive, red = repulsive).  Otherwise the classic bond-strength matrix
+    is shown for hierarchical-assembly mode.
+    """
     bond_table = compute_bond_table(n0, e1, custom_bonds)
-
-    # Coupling matrix: entry [i,j] = native bond energy between identities i and j
-    coupling_matrix = np.zeros((n0, n0))
-    for (i, j), val in bond_table.items():
-        coupling_matrix[i, j] = val
 
     colours = _slot_colours(n0)
     n_frames = len(frames)
     L = float(box_length)
 
-    # Shared colormap for bond lines and coupling matrix
+    # Colormap for bond lines in the lattice panel
     bond_vals = sorted(set(bond_table.values()))
     bond_cmap = plt.cm.plasma
     bond_norm = mcolors.Normalize(vmin=bond_vals[0] if bond_vals else 0, vmax=e1)
 
-    # ---- Layout: lattice (left) | energy (top-right) | matrix (bottom-right) --
-    fig = plt.figure(figsize=(15, 7))
-    gs = fig.add_gridspec(2, 2, width_ratios=[1.1, 1], hspace=0.45, wspace=0.35)
-    ax_lat = fig.add_subplot(gs[:, 0])
-    ax_en  = fig.add_subplot(gs[0, 1])
-    ax_cm  = fig.add_subplot(gs[1, 1])
+    # ---- Figure layout -------------------------------------------------------
+    if coupling_matrices is not None:
+        # Polymer mode: lattice | energy (top-right) + 5 coupling matrices (bottom-right)
+        _CM_KEYS   = ['D0',      'D1',   'Dsq2',    'D2',   'Dsq5']
+        _CM_TITLES = ['d=0\n(hard sphere)', 'd=1', 'd=√2', 'd=2', 'd=√5']
+        fig = plt.figure(figsize=(24, 7))
+        gs = fig.add_gridspec(2, 7,
+                              width_ratios=[2.2, 1, 1, 1, 1, 1, 0.15],
+                              hspace=0.55, wspace=0.45)
+        ax_lat = fig.add_subplot(gs[:, 0])
+        ax_en  = fig.add_subplot(gs[0, 1:6])
+        mat_axes = [fig.add_subplot(gs[1, c]) for c in range(1, 6)]
+
+        for ax, key, title in zip(mat_axes, _CM_KEYS, _CM_TITLES):
+            mat = coupling_matrices.get(key)
+            if mat is None:
+                ax.axis('off')
+                continue
+            phys = -mat  # physical energy: negative = attractive
+            vmax = np.abs(phys).max() or 1.0
+            im = ax.imshow(phys, cmap='RdBu', vmin=-vmax, vmax=vmax,
+                           origin='upper', aspect='auto', interpolation='nearest')
+            ax.set_title(title, fontsize=7, pad=3)
+            ax.set_xlabel("id", fontsize=6)
+            ax.set_ylabel("id", fontsize=6)
+            tick_step = max(1, n0 // 4)
+            ticks = list(range(0, n0, tick_step))
+            ax.set_xticks(ticks); ax.set_yticks(ticks)
+            ax.tick_params(labelsize=5)
+            fig.colorbar(im, ax=ax, shrink=0.85, pad=0.04,
+                         label='E phys\n(kBT)').ax.tick_params(labelsize=5)
+
+    else:
+        # Classic mode: lattice | energy | bond-strength matrix
+        coupling_matrix = np.zeros((n0, n0))
+        for (i, j), val in bond_table.items():
+            coupling_matrix[i, j] = val
+
+        fig = plt.figure(figsize=(15, 7))
+        gs = fig.add_gridspec(2, 2, width_ratios=[1.1, 1], hspace=0.45, wspace=0.35)
+        ax_lat = fig.add_subplot(gs[:, 0])
+        ax_en  = fig.add_subplot(gs[0, 1])
+        ax_cm  = fig.add_subplot(gs[1, 1])
+
+        masked_cm = np.ma.masked_where(coupling_matrix == 0, coupling_matrix)
+        ax_cm.set_facecolor("#222222")
+        cm_img = ax_cm.imshow(
+            masked_cm, cmap=bond_cmap, norm=bond_norm,
+            origin="upper", aspect="auto", interpolation="nearest",
+        )
+        fig.colorbar(cm_img, ax=ax_cm, label="Bond energy")
+        ax_cm.set_title("Bond strength matrix", fontsize=9)
+        ax_cm.set_xlabel("Particle identity")
+        ax_cm.set_ylabel("Particle identity")
+        tick_step = max(1, n0 // 8)
+        ticks = list(range(0, n0, tick_step))
+        ax_cm.set_xticks(ticks)
+        ax_cm.set_yticks(ticks)
 
     fig.suptitle(
         f"HierarchicalAssembly  |  n0={n0}  nParticles={n_particles}"
@@ -472,7 +600,7 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
         fontsize=11,
     )
 
-    # ---- Lattice panel ----------------------------------------------------
+    # ---- Lattice panel -------------------------------------------------------
     ax_lat.set_facecolor("#111111")
     ax_lat.set_xlim(0, L)
     ax_lat.set_ylim(0, L)
@@ -481,11 +609,9 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
     ax_lat.set_ylabel("y")
     lat_title = ax_lat.set_title("Step 0", fontsize=10)
 
-    # Bond lines drawn below circles
     bond_lc = LineCollection([], linewidths=2.5, alpha=0.85, zorder=1)
     ax_lat.add_collection(bond_lc)
 
-    # Circles for particles
     circles = []
     for i, (x, y) in enumerate(frames[0]):
         circ = patches.Circle(
@@ -495,7 +621,7 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
         ax_lat.add_patch(circ)
         circles.append(circ)
 
-    # ---- Energy panel -----------------------------------------------------
+    # ---- Energy panel --------------------------------------------------------
     ax_en.plot(steps, energy, lw=1, color="steelblue", alpha=0.7, label="Energy")
     running_avg = np.cumsum(energy) / (np.arange(len(energy)) + 1)
     ax_en.plot(steps, running_avg, lw=1.5, color="tomato", label="Running avg")
@@ -505,22 +631,6 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
     ax_en.legend(fontsize=8)
     ax_en.grid(True, alpha=0.3)
     vline = ax_en.axvline(steps[0], color="gold", lw=1.0, linestyle="--", alpha=0.9)
-
-    # ---- Coupling matrix panel --------------------------------------------
-    masked_cm = np.ma.masked_where(coupling_matrix == 0, coupling_matrix)
-    ax_cm.set_facecolor("#222222")
-    cm_img = ax_cm.imshow(
-        masked_cm, cmap=bond_cmap, norm=bond_norm,
-        origin="upper", aspect="auto", interpolation="nearest",
-    )
-    fig.colorbar(cm_img, ax=ax_cm, label="Bond energy")
-    ax_cm.set_title("Bond strength matrix", fontsize=9)
-    ax_cm.set_xlabel("Particle identity")
-    ax_cm.set_ylabel("Particle identity")
-    tick_step = max(1, n0 // 8)
-    ticks = list(range(0, n0, tick_step))
-    ax_cm.set_xticks(ticks)
-    ax_cm.set_yticks(ticks)
 
     plt.tight_layout()
 
@@ -773,7 +883,11 @@ def plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, 
         ax1.set_xscale('log')
 
     # Right: Observed vs predicted frequencies (final)
-    ax2.scatter(boltz_freq, obs_freq, c=state_energies, cmap='plasma', s=40, alpha=0.8, zorder=3)
+    # Colour by physical energy (negative = attractive = blue)
+    phys_energies = -state_energies
+    e_norm = plt.Normalize(phys_energies.min(), phys_energies.max())
+    ax2.scatter(boltz_freq, obs_freq, c=phys_energies, cmap='RdBu', norm=e_norm,
+                s=40, alpha=0.8, zorder=3)
     lims = [0, max(boltz_freq.max(), obs_freq.max()) * 1.1]
     ax2.plot(lims, lims, 'r--', lw=1, label='y=x (perfect)')
     ax2.set_xlabel("Boltzmann predicted frequency")
@@ -781,10 +895,9 @@ def plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, 
     ax2.set_title(f"Observed vs Predicted  (final r={correlations[-1]:.3f})")
     ax2.legend(fontsize=8)
     ax2.grid(True, alpha=0.3)
-    sm = plt.cm.ScalarMappable(cmap='plasma',
-                                norm=plt.Normalize(state_energies.min(), state_energies.max()))
+    sm = plt.cm.ScalarMappable(cmap='RdBu', norm=e_norm)
     sm.set_array([])
-    fig.colorbar(sm, ax=ax2, label='State energy (kBT)')
+    fig.colorbar(sm, ax=ax2, label='Physical energy (kBT)\n(blue = attractive)')
     plt.tight_layout()
     plt.show()
 
@@ -799,10 +912,12 @@ def plot_weak_coupling_matrices(matrices, n0):
         if mat is None:
             ax.set_visible(False)
             continue
-        vmax = np.abs(mat).max() or 1.0
-        im = ax.imshow(mat, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+        # Display as physical energy (negative = attractive): phys = −coupling
+        phys = -mat
+        vmax = np.abs(phys).max() or 1.0
+        im = ax.imshow(phys, cmap='RdBu', vmin=-vmax, vmax=vmax,
                        origin='upper', aspect='auto', interpolation='nearest')
-        fig.colorbar(im, ax=ax, label='Energy (kBT)')
+        fig.colorbar(im, ax=ax, label='Physical energy (kBT)\n(blue = attractive)')
         ax.set_title(title, fontsize=9)
         ax.set_xlabel("Particle identity")
         ax.set_ylabel("Particle identity")
@@ -828,6 +943,13 @@ def plot_all_states(n0, coupling_matrices=None):
     states = enumerate_canonical_states(n0)
     n_states = len(states)
     print(f"  Found {n_states} canonical conformations.")
+
+    if coupling_matrices is not None:
+        # Sort by physical energy ascending (most negative = most favourable first)
+        states = sorted(
+            states,
+            key=lambda s: -compute_conformation_energy(s[0], n0, coupling_matrices),
+        )
 
     chain_seq = _chain_order(n0)          # e.g. [0,1,3,2] for n0=4
     colours = _slot_colours(n0)
@@ -864,10 +986,10 @@ def plot_all_states(n0, coupling_matrices=None):
                        c=[colours[pid]], edgecolors='k',
                        linewidth=0.6, zorder=2)
 
-        # Title
+        # Title — show physical energy (negative = favourable)
         if coupling_matrices is not None:
-            E = compute_conformation_energy(key, n0, coupling_matrices)
-            title = f"{idx+1}. g={deg}  E={E:.2f}"
+            E_phys = -compute_conformation_energy(key, n0, coupling_matrices)
+            title = f"{idx+1}. g={deg}  E={E_phys:.2f}"
         else:
             title = f"{idx+1}. g={deg}"
         ax.set_title(title, fontsize=6.5, pad=2)
@@ -957,21 +1079,21 @@ def main():
         for (pi, pj) in snake_path(n0):
             backbone_dict[(pi, pj)] = args.e1
             backbone_dict[(pj, pi)] = args.e1
+        # Animation window: lattice + energy + all 5 coupling matrices
         make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
-                   frames, args.filehead, args.e1, custom_bonds=backbone_dict)
+                   frames, args.filehead, args.e1,
+                   custom_bonds=backbone_dict, coupling_matrices=polymer_matrices)
 
-        # Show all canonical conformations
-        plot_all_states(n0, coupling_matrices=polymer_matrices)
+        if args.boltzmann:
+            # Show all canonical conformations ranked by physical energy
+            plot_all_states(n0, coupling_matrices=polymer_matrices)
 
-        # Show weak coupling matrices
-        plot_weak_coupling_matrices(polymer_matrices, n0)
-
-        # Run Boltzmann validation
-        print("Running Boltzmann validation...")
-        step_indices, correlations, obs_freq, boltz_freq, state_energies = boltzmann_validation(
-            frames, n0, float(box_length), polymer_matrices, steps
-        )
-        plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, state_energies, n0)
+            # Run Boltzmann validation
+            print("Running Boltzmann validation...")
+            step_indices, correlations, obs_freq, boltz_freq, state_energies = boltzmann_validation(
+                frames, n0, float(box_length), polymer_matrices, steps
+            )
+            plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, state_energies, n0)
 
     else:
         # Resolve bond file / custom mode

@@ -7,9 +7,9 @@ This code reproduces simulations from the following paper by Miranda Holmes-Cerf
 The code simulates systems of sticky squares on a square lattice using the Virtual Move Monte Carlo (VMMC) algorithm. The `StickySquares` class is adapted from [vmmc.xyz](http://vmmc.xyz/), extended to handle lattice particles with direction-specific patchy interactions.
 
 This fork adds:
-- **`run_custom.cpp`**: driver for arbitrary user-defined bond strengths via a bond file, with omni-directional and diagonal bonding for floppy polymer simulations
-- **`run_polymer.cpp`**: driver for polymer mode — auto-generated backbone bonds, multi-distance weak couplings, seeded RNG, and pre-assembled initial configurations
-- **`run_and_plot.py`**: Python wrapper to run simulations and visualise results as an animated plot, including Boltzmann distribution validation
+- **`run_custom.cpp`**: driver for arbitrary user-defined bond strengths via a bond file, with omni-directional and diagonal bonding
+- **`run_polymer.cpp`**: driver for polymer mode — reads an extended bond file with confinement-based backbone encoding, multi-distance weak couplings, seeded RNG, and pre-assembled initial configurations
+- **`run_and_plot.py`**: Python wrapper to run simulations and visualise results as an animated plot with inline coupling-matrix display; optional Boltzmann distribution validation
 
 
 ---
@@ -25,48 +25,103 @@ make               # builds run_hier
 make run_custom    # builds run_custom
 make run_polymer   # builds run_polymer
 
-# 3. Run a 4-particle polymer with Boltzmann validation
+# 3. Run a 4-particle polymer (animation + coupling matrices)
 python run_and_plot.py --polymer 4 --L 12 --nsteps 100000 --nsweep 1 \
   --e1 1000 --weak-e 1.0 --weak-std 0.5 --weak-seed 42 --sim-seed 7
+
+# 4. Same run, also show Boltzmann validation and canonical-state diagram
+python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
+  --e1 1000 --weak-e 1.0 --weak-std 0.5 --weak-seed 42 --sim-seed 7 --boltzmann
 ```
 
 ---
 
-## Polymer mode (new)
+## Polymer mode
 
 The `--polymer N` flag fully automates polymer simulation:
 
-1. **Auto-generates backbone bonds** following a snake path through the √N × √N target grid, ensuring consecutive chain members are always adjacent (Manhattan distance = 1).
-2. **Generates random weak coupling matrices** — one symmetric N×N matrix for each of four spatial distance classes (1, √2, 2, √5), drawn from N(weak_e, weak_std). Entries can be negative (repulsive).
-3. **Initialises particles in the assembled configuration** — the chain is pre-placed in a straight line so all backbone bonds are immediately satisfied.
-4. **Validates Boltzmann sampling** — after the run, plots the Pearson correlation between observed conformation frequencies and the Boltzmann prediction as a function of simulation time (convergence → 1 implies detailed balance is satisfied).
+1. **Generates a snake-path chain sequence** through the √N × √N target grid, defining which particle identity pairs are bonded.
+2. **Encodes backbone confinement via repulsive coupling matrices** — see [Confinement mechanism](#confinement-mechanism) below.
+3. **Generates random weak coupling matrices** — one symmetric N×N matrix for each of five distance classes (0, 1, √2, 2, √5), drawn from N(weak_e, weak_std). Entries can be negative (repulsive).
+4. **Initialises particles in the assembled configuration** using a Hilbert space-filling curve (or boustrophedon path for non-power-of-2 √N), so all backbone constraints are immediately satisfied with no overlaps, regardless of polymer size.
+5. *(Optional, with `--boltzmann`)* **Validates Boltzmann sampling** — plots the Pearson correlation between observed conformation frequencies and the Boltzmann prediction as a function of simulation time.
 
-### Polymer mode example
+### Confinement mechanism
 
-```bash
-python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
-  --e1 1000 --weak-e 1.0 --weak-std 0.5 --weak-seed 42 --sim-seed 7 --filehead hier
+Backbone chain bonds are **not** implemented as directional attractive interactions. Instead, each backbone-bonded pair (i, j) receives strongly repulsive entries in the `wD2` and `wDsq5` coupling matrices:
+
+```
+wD2[i,j]   -= e_backbone      (coupling << 0  →  physical energy >> 0  →  repulsive)
+wDsq5[i,j] -= e_backbone
 ```
 
-This opens three figures:
-1. **Simulation animation** — lattice, energy over time, backbone bond matrix
-2. **Weak coupling matrices** — 2×2 grid showing the four distance-class coupling matrices
-3. **Boltzmann validation** — Pearson r vs simulation steps (left) and observed vs predicted frequency scatter (right)
+Combined with the hard-sphere exclusion already present in the C++ engine (particles cannot overlap, so d < 1 costs infinite energy), this confines every bonded pair to separations d ∈ {1, √2}:
+
+| Distance | Energy |
+|----------|--------|
+| d = 0 | +∞ (hard sphere) |
+| d = 1 | weak coupling only (random) |
+| d = √2 | weak coupling only (random) |
+| d = 2 | +e_backbone (strongly repulsive for bonded pair) |
+| d = √5 | +e_backbone (strongly repulsive for bonded pair) |
+
+This means **all bonding physics is encoded purely in the five coupling matrices**. There is no separate backbone attraction term; the BACKBONE section of the bond file is empty. The coupling matrices shown in the animation window (see below) are a complete description of the system.
+
+A `wD0` matrix (same repulsive entries, for visualisation only) is generated to represent the hard-sphere constraint alongside the other four active matrices.
+
+### Space-filling curve initialisation
+
+For a polymer of N = l₀² particles the initial configuration is generated by mapping the chain to a **Hilbert space-filling curve** on the l₀ × l₀ grid (falling back to a boustrophedon path when l₀ is not a power of 2). Consecutive positions along the curve always differ by exactly one lattice step (Manhattan distance = 1), so all backbone constraints are immediately satisfied. The footprint is centred in the simulation box; no particles overlap.
+
+The Hilbert ordering is also the basis for the future assignment of bond strengths by proximity within the space-filling curve.
+
+### Animation window (polymer mode)
+
+The single animation window contains three regions:
+
+| Panel | Contents |
+|-------|----------|
+| Left (full height) | Animated lattice: coloured particle discs, backbone bond lines, periodic boundary |
+| Top-right | Total energy and running average vs simulation step |
+| Bottom-right (×5) | Coupling matrices D0, D1, D√2, D2, D√5 as physical-energy heatmaps (blue = attractive, red = repulsive) |
+
+The coupling matrices are static (they do not change during the simulation). Their colour scale is centred at zero with symmetric limits so the sign of each entry is immediately visible.
+
+### Boltzmann validation (`--boltzmann`)
+
+When `--boltzmann` is passed two additional figures are opened after the simulation:
+
+**Canonical-state diagram** — every distinct conformation of the N-bead polymer chain, drawn as a grid of small diagrams. States are enumerated by a depth-first self-avoiding walk on the 8-connected 2D lattice, canonicalised under the full dihedral group (4 rotations × 2 reflections). States are sorted from lowest to highest physical energy. Each panel title shows the state index, degeneracy g (4 for palindromic linear chains, 8 for all others), and physical energy E (negative = favourable).
+
+**Boltzmann correlation figure** — two panels:
+- *Left*: Pearson r between observed and predicted frequencies vs simulation frame (log scale). Convergence to r ≈ 1 confirms detailed balance.
+- *Right*: Scatter of observed vs Boltzmann-predicted frequency at the final frame, coloured by physical energy (blue = low energy = frequently visited).
+
+#### Energy sign convention
+
+Throughout the code, **negative physical energy = attractive / favourable**. Internally the C++ engine stores `pair_energy = −coupling_value`, so a positive coupling value is attractive. The Boltzmann weight of a state is:
+
+```
+P(state) ∝ g × exp(+E_python) = g × exp(−E_physical)
+```
+
+where `E_python = sum of coupling values` and `E_physical = −E_python`. All plots use `E_physical` so that the sign is intuitive.
 
 ### Polymer mode flags
 
 | Flag | Description |
 |------|-------------|
-| `--polymer N` | Polymer size N (must be a perfect square: 4, 9, 16, …). Sets n0=N, 1 copy. |
-| `--e1 E` | Backbone bond energy (default: 8.0). Should be large (e.g. 1000) to keep chain assembled. |
-| `--weak-e E` | Mean weak coupling energy (default: 1.0). Can produce repulsive couplings when combined with large `--weak-std`. |
-| `--weak-std S` | Std dev of weak couplings (default: 0.5). Values > mean allow negative (repulsive) couplings. |
-| `--weak-seed N` | RNG seed for coupling matrix generation (for reproducibility). |
-| `--sim-seed N` | RNG seed for the C++ VMMC simulation (for reproducibility). |
+| `--polymer N` | Polymer size N (perfect square: 4, 9, 16, …). Sets n0=N, 1 copy. |
+| `--e1 E` | Backbone confinement energy (default: 8.0). Use large values (e.g. 1000) to keep chain assembled. |
+| `--weak-e E` | Mean weak coupling value (default: 1.0). Positive = net attraction between pairs. |
+| `--weak-std S` | Std dev of weak couplings (default: 0.5). Values > weak-e allow negative (repulsive) couplings. |
+| `--weak-seed N` | RNG seed for coupling matrix generation. |
+| `--sim-seed N` | RNG seed for the C++ VMMC simulation. |
 | `--L N` | Box side length. |
 | `--nsteps N` | Number of output steps. |
 | `--nsweep N` | MC sweeps per step (default: 1 for fine-grained sampling). |
 | `--filehead STR` | Prefix for output files (default: `hier`). |
+| `--boltzmann` | Enable canonical-state diagram and Boltzmann validation plots. |
 | `--no-run` | Skip simulation, just re-plot existing output files. |
 
 ---
@@ -87,18 +142,18 @@ make run_custom
 ```
 where `mybonds.txt` specifies bond strengths between particle pairs (see **Bond file format** below).
 
-### Polymer with weak couplings (new)
+### Polymer with weak couplings
 ```bash
 make run_polymer
 ./run_polymer input_hier.txt mybonds_extended.txt [conffile] [seed]
 ```
-where `mybonds_extended.txt` uses the extended format with `BACKBONE` and `WEAK_D*` sections (see below).
+where `mybonds_extended.txt` uses the extended format with `BACKBONE` and `WEAK_D*` sections (see below).  When generated by `run_and_plot.py --polymer`, the BACKBONE section is intentionally empty and confinement is encoded in the WEAK_D2 and WEAK_DSQRT5 sections.
 
 ### Python wrapper (recommended)
 ```bash
 python run_and_plot.py [options]
 ```
-Runs the simulation and opens an animated visualisation showing the lattice, energy over time, and the bond-strength coupling matrix.
+Runs the simulation and opens an animated visualisation.
 
 **Key options (all modes):**
 
@@ -106,7 +161,7 @@ Runs the simulation and opens an animated visualisation showing the lattice, ene
 |------|-------------|
 | `--n0 N` | Target structure size (must be a perfect square: 4, 16, 64, 256, …) |
 | `--p N` | Total particles in simulation (multiple of n0) |
-| `--L N` | Box side length (overrides `--dens`) |
+| `--L N` | Box side length (periodic boundary conditions); overrides `--dens` |
 | `--nsteps N` | Number of output steps |
 | `--nsweep N` | MC sweeps per step |
 | `--e1 E` | Bond energy for hierarchical/backbone |
@@ -145,12 +200,12 @@ Used for polymer mode with multi-distance weak couplings:
 ```
 # Extended polymer bond file
 BACKBONE
-particle_i  particle_j  energy
+particle_i  particle_j  energy     # (may be empty when using confinement encoding)
 ...
 BACKBONE_END
 
 WEAK_D1
-particle_i  particle_j  energy   # weak coupling at distance 1
+particle_i  particle_j  energy     # weak coupling at distance 1
 ...
 WEAK_D1_END
 
@@ -167,46 +222,18 @@ WEAK_DSQRT5
 WEAK_DSQRT5_END
 ```
 
-- `BACKBONE` section: strong omni-directional bonds (same rules as simple format). These are the chain backbone bonds.
+- `BACKBONE` section: strong omni-directional bonds. When using confinement-based backbone (generated by `--polymer`), this section is **empty**.
 - `WEAK_D*` sections: symmetric N×N coupling matrices, one entry per unique pair `i j energy` (upper triangle). Added to the pair energy at the corresponding distance. Can be positive (attractive) or negative (repulsive).
-- The four supported distance classes: **1** (cardinal), **√2** (diagonal), **2** (two lattice steps), **√5** (knight's move).
+- The four active distance classes: **1** (cardinal), **√2** (diagonal), **2** (two lattice steps), **√5** (knight's move).
 
 ### Example bond files
 
 | File | Description |
 |------|-------------|
-| `bonds_polymer_chain_4.txt` | 3-bond linear polymer, n0=4 |
-| `bonds_polymer_chain_16.txt` | 15-bond linear polymer, n0=16 |
-| `bonds_polymer_chain.txt` | 63-bond linear polymer, n0=64 |
+| `bonds_polymer_chain_4.txt` | 4-particle polymer bond file (legacy, attractive backbone) |
+| `bonds_polymer_chain_16.txt` | 16-particle polymer bond file (legacy) |
+| `bonds_polymer_chain.txt` | 64-particle polymer bond file (legacy) |
 | `bonds_custom_example.txt` | All-pair random bonds, n0=64 |
-
-### Polymer chain examples
-
-```bash
-# Flexible 4-particle polymer (legacy bond file, no weak couplings)
-python run_and_plot.py --n0 4 --p 4 --L 12 --nsteps 2000 --nsweep 1 \
-  --bond-file bonds_polymer_chain_4.txt --filehead hier --e1 1000
-
-# Flexible 16-particle polymer
-python run_and_plot.py --n0 16 --p 16 --L 12 --nsteps 2000 --nsweep 1 \
-  --bond-file bonds_polymer_chain_16.txt --filehead hier --e1 1000
-
-# Auto-generated polymer with weak couplings and Boltzmann validation
-python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
-  --e1 1000 --weak-e 1.0 --weak-std 0.5 --weak-seed 42 --sim-seed 7
-```
-
----
-
-## Boltzmann validation
-
-When running with `--polymer`, the code checks that the VMMC simulation correctly samples the Boltzmann distribution.
-
-**States** are defined as distinct polymer conformations, invariant under lattice translation (but not rotation). Each state is represented as the set of relative positions of particles 1…N-1 with respect to particle 0.
-
-**Energy** of each state is computed analytically from the weak coupling matrices: sum of all pairwise coupling energies at their actual separations in that conformation. (The backbone energy is constant for an assembled polymer and cancels in the distribution.)
-
-**Pearson correlation** between observed frequencies and Boltzmann weights (exp(−E)/Z) is plotted as a function of simulation frames. It should converge to ~1 for a correctly-implemented sampler with enough statistics.
 
 ---
 
@@ -214,9 +241,9 @@ When running with `--polymer`, the code checks that the VMMC simulation correctl
 
 Each particle is a square on a 2D lattice. Interactions are:
 
-- **Hard-core exclusion**: particles cannot overlap (infinite energy penalty).
-- **Backbone bonds** (`run_polymer`): strong omni-directional sticky interactions between designated identity pairs, active at distance 1 and √2. Keeps the polymer chain assembled.
-- **Weak couplings** (`run_polymer`): distance-class-specific symmetric coupling matrices, active at distances 1, √2, 2, and √5. Differentiates the energy of distinct conformations.
+- **Hard-core exclusion**: particles cannot overlap (infinite energy penalty for d < 1).
+- **Backbone confinement** (`run_polymer`, generated by `--polymer`): strongly repulsive coupling entries in `wD2` and `wDsq5` for bonded pairs. Combined with hard-sphere exclusion this traps each bonded pair at d ∈ {1, √2} without requiring any directional attraction. No separate BACKBONE section is needed.
+- **Weak couplings** (`run_polymer`): distance-class-specific symmetric coupling matrices, active at distances 1, √2, 2, and √5. Positive values are attractive; negative values are repulsive. These differentiate the energies of distinct conformations and drive Boltzmann-weighted sampling.
 - **Nearest-neighbour sticky interactions** (`run_hier`/`run_custom`): bond strength depends on sub-block boundary level or is specified per identity pair.
 
 Dynamics use the **Virtual Move Monte Carlo** algorithm (cluster moves), which efficiently samples collective rearrangements including conformational changes of flexible polymers.
@@ -231,7 +258,7 @@ Dynamics use the **Virtual Move Monte Carlo** algorithm (cluster moves), which e
 | `run_hier.cpp` | Original hierarchical assembly driver |
 | `run_custom.cpp` | Custom bond driver with omni-directional + diagonal bonding |
 | `run_polymer.cpp` | Polymer driver: extended bond format, weak couplings, initial config, seeded RNG |
-| `run_and_plot.py` | Python wrapper: runs simulation, animated visualisation, Boltzmann validation |
+| `run_and_plot.py` | Python wrapper: runs simulation, animated visualisation with inline coupling matrices, optional Boltzmann validation |
 | `src/` | All library source and header files |
 | `input_hier.txt` | Example input file |
 | `bonds_polymer_chain_4.txt` | 4-particle polymer bond file |
