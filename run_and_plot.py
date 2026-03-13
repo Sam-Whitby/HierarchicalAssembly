@@ -83,6 +83,12 @@ def parse_args():
                    help="Random seed for weak coupling generation")
     p.add_argument("--sim-seed", type=int, default=None,
                    help="Random seed for the C++ simulation RNG")
+    p.add_argument("--hilbert-A", type=float, default=None,
+                   help="Coupling strength A for Hilbert-curve cardinal-adjacent pairs "
+                        "(d=1 in Hilbert grid). Activates Hilbert-local coupling mode.")
+    p.add_argument("--hilbert-B", type=float, default=None,
+                   help="Coupling strength B for Hilbert-curve diagonal-adjacent pairs "
+                        "(d=√2 in Hilbert grid). Used with --hilbert-A.")
     p.add_argument("--boltzmann", action="store_true",
                    help="Enable Boltzmann validation and canonical-state diagram (polymer mode only)")
 
@@ -234,6 +240,89 @@ def generate_polymer_bondfile(n0, e_backbone, e_weak, std_weak, path, seed=None)
         write_matrix(f, wDsq5, "WEAK_DSQRT5")
 
     print(f"Extended bond file written to {path}  (confinement via wD2/wDsq5)")
+    return {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
+
+
+def generate_hilbert_bondfile(n0, e_backbone, A, B, path):
+    """Generate a bond file with Hilbert-curve-local couplings only.
+
+    Non-zero weak coupling is assigned only between particles that are spatially
+    adjacent in the Hilbert curve grid used for initialisation:
+      - Hilbert cardinal neighbours (grid distance = 1):   wD1[i,j]   = A
+      - Hilbert diagonal neighbours (grid distance = √2):  wDsq2[i,j] = B
+
+    Backbone-bonded pairs (always at Hilbert distance 1, chain-consecutive) are
+    excluded from A/B — they are already confined by repulsion in wD2/wDsq5.
+    All other matrix entries are zero.
+
+    Requires l0 = sqrt(n0) to be a power of 2 (Hilbert curve is defined for those).
+
+    Returns dict: {'D0': mat, 'D1': mat, 'Dsq2': mat, 'D2': mat, 'Dsq5': mat}
+    """
+    l0 = round(math.sqrt(n0))
+    if not _is_power_of_2(l0):
+        raise ValueError(f"Hilbert-local mode requires l0=sqrt(n0) to be a power of 2; "
+                         f"got n0={n0}, l0={l0}")
+
+    backbone_bonds = snake_path(n0)
+    backbone_set = set()
+    for (pi, pj) in backbone_bonds:
+        backbone_set.add((pi, pj))
+        backbone_set.add((pj, pi))
+
+    # Map particle_id -> (hx, hy) in the Hilbert grid
+    chain_order = _chain_order(n0)
+    sfc_pos = _space_filling_positions(l0)  # Hilbert positions in chain traversal order
+    hpos = {}
+    for k, pid in enumerate(chain_order):
+        hpos[pid] = sfc_pos[k]
+
+    wD1   = np.zeros((n0, n0))
+    wDsq2 = np.zeros((n0, n0))
+    wD2   = np.zeros((n0, n0))
+    wDsq5 = np.zeros((n0, n0))
+    wD0   = np.zeros((n0, n0))  # display-only
+
+    # Assign A/B to Hilbert-adjacent non-backbone pairs
+    n_d1, n_dsq2 = 0, 0
+    for i in range(n0):
+        for j in range(i + 1, n0):
+            if (i, j) in backbone_set:
+                continue
+            dx = hpos[j][0] - hpos[i][0]
+            dy = hpos[j][1] - hpos[i][1]
+            d2 = dx * dx + dy * dy
+            if d2 == 1:
+                wD1[i, j] = wD1[j, i] = A;  n_d1 += 1
+            elif d2 == 2:
+                wDsq2[i, j] = wDsq2[j, i] = B;  n_dsq2 += 1
+
+    # Backbone confinement: repulsion at d=2 and d=√5
+    for (pi, pj) in backbone_bonds:
+        wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
+        wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
+        wD0[pi, pj]   -= e_backbone;  wD0[pj, pi]   -= e_backbone  # visual only
+
+    def write_matrix(f, mat, tag):
+        f.write(f"{tag}\n")
+        for i in range(n0):
+            for j in range(i, n0):
+                f.write(f"{i} {j} {mat[i,j]:.6f}\n")
+        f.write(f"{tag}_END\n\n")
+
+    with open(path, 'w') as f:
+        f.write(f"# Hilbert-local bond file  n0={n0}  e_backbone={e_backbone}"
+                f"  A={A}  B={B}\n")
+        f.write(f"# Non-zero pairs: {n_d1} cardinal (A), {n_dsq2} diagonal (B)\n\n")
+        f.write("BACKBONE\n")
+        f.write("BACKBONE_END\n\n")
+        write_matrix(f, wD1,   "WEAK_D1")
+        write_matrix(f, wDsq2, "WEAK_DSQRT2")
+        write_matrix(f, wD2,   "WEAK_D2")
+        write_matrix(f, wDsq5, "WEAK_DSQRT5")
+
+    print(f"Hilbert-local bond file written to {path}  "
+          f"({n_d1} cardinal pairs with A={A}, {n_dsq2} diagonal pairs with B={B})")
     return {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
 
 
@@ -601,7 +690,7 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
     )
 
     # ---- Lattice panel -------------------------------------------------------
-    ax_lat.set_facecolor("#111111")
+    ax_lat.set_facecolor("white" if coupling_matrices is not None else "#111111")
     ax_lat.set_xlim(0, L)
     ax_lat.set_ylim(0, L)
     ax_lat.set_aspect("equal")
@@ -616,7 +705,9 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
     for i, (x, y) in enumerate(frames[0]):
         circ = patches.Circle(
             (x + 0.5, y + 0.5), radius=0.35,
-            facecolor=colours[i % n0], edgecolor="white", linewidth=0.5, zorder=2,
+            facecolor=colours[i % n0],
+            edgecolor="black" if coupling_matrices is not None else "white",
+            linewidth=0.5, zorder=2,
         )
         ax_lat.add_patch(circ)
         circles.append(circ)
@@ -665,7 +756,7 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                 for seg in _bond_segments_pbc(xi+0.5, yi+0.5,
                                               coords[j,0]+0.5, coords[j,1]+0.5, L):
                     segments.append(seg)
-                    seg_colors.append(bond_cmap(bond_norm(val)))
+                    seg_colors.append('black' if coupling_matrices is not None else bond_cmap(bond_norm(val)))
 
         bond_lc.set_segments(segments)
         bond_lc.set_colors(seg_colors)
@@ -1054,10 +1145,15 @@ def main():
 
         # Generate bond file
         bond_file = os.path.join(script_dir, f"{args.filehead}_polymer_bonds.txt")
-        polymer_matrices = generate_polymer_bondfile(
-            args.n0, args.e1, args.weak_e, args.weak_std,
-            bond_file, seed=args.weak_seed
-        )
+        if args.hilbert_A is not None or args.hilbert_B is not None:
+            A = args.hilbert_A if args.hilbert_A is not None else 0.0
+            B = args.hilbert_B if args.hilbert_B is not None else 0.0
+            polymer_matrices = generate_hilbert_bondfile(args.n0, args.e1, A, B, bond_file)
+        else:
+            polymer_matrices = generate_polymer_bondfile(
+                args.n0, args.e1, args.weak_e, args.weak_std,
+                bond_file, seed=args.weak_seed
+            )
 
         # Write initial config
         box_len_for_conf = args.L if args.L else round(math.sqrt(n_particles / dens))

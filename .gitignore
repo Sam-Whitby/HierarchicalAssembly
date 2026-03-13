@@ -1,6 +1,7 @@
 # Compiled binaries
 run_hier
 run_custom
+run_polymer
 run_crosstalk
 
 # Object and dependency files
@@ -11,8 +12,11 @@ obj/
 # Simulation output files
 *_traj.txt
 *_stats.txt
+*_init.conf
+*_polymer_bonds.txt
 *.gif
 *.png
 
-# Generated bond files (keep hand-crafted ones)
-hier_bonds.txt
+# Python cache
+__pycache__/
+*.pyc
