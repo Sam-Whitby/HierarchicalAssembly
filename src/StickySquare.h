@@ -44,8 +44,18 @@ public:
     vector<Neighbours> north;   // north neighbours
     vector<Neighbours> east;    // east neighbours
     double crosstalk = 0.0;     // crosstalk parameter; default = 0 (no crosstalk)
+    int n0_size = 0;  // target structure size (for particle identity = index % n0_size)
+    // Weak coupling matrices [id1][id2], symmetric, additive on top of backbone
+    vector<vector<double>> weakD1;     // distance 1 (cardinal)
+    vector<vector<double>> weakDsq2;   // distance sqrt(2) (diagonal)
+    vector<vector<double>> weakD2;     // distance 2
+    vector<vector<double>> weakDsq5;   // distance sqrt(5) (knight's move)
     Interactions(int,vector<Triple>&,vector<Triple>&);   // constructor: nParticples, TriplesNorth, TriplesEast
     Interactions(int,vector<Triple>&,vector<Triple>&,double);   // constructor: nParticples, TriplesNorth, TriplesEast, crosstalk
+    Interactions(int nParticles, int n0,
+                 vector<Triple>& north, vector<Triple>& east,
+                 vector<vector<double>>& wD1, vector<vector<double>>& wDsq2,
+                 vector<vector<double>>& wD2,  vector<vector<double>>& wDsq5);
 
     void printInteractions(vector<Neighbours>&);
 };

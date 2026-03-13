@@ -52,7 +52,7 @@ Interactions::Interactions(int np,vector<Triple>& triplesNorth, vector<Triple>& 
     }
 }
 
-Interactions::Interactions(int np,vector<Triple>& triplesNorth, vector<Triple>& triplesEast, double pcrosstalk) 
+Interactions::Interactions(int np,vector<Triple>& triplesNorth, vector<Triple>& triplesEast, double pcrosstalk)
 : crosstalk {pcrosstalk} {
     // reserve space to hold interactions for all particles
     north.resize(np);
@@ -66,6 +66,19 @@ Interactions::Interactions(int np,vector<Triple>& triplesNorth, vector<Triple>& 
     for(Triple t : triplesEast) {
         east[t.i].addVal(t.j,t.val);
     }
+}
+
+Interactions::Interactions(int np, int n0,
+        vector<Triple>& triplesNorth, vector<Triple>& triplesEast,
+        vector<vector<double>>& wD1, vector<vector<double>>& wDsq2,
+        vector<vector<double>>& wD2,  vector<vector<double>>& wDsq5)
+    : Interactions(np, triplesNorth, triplesEast)
+{
+    n0_size  = n0;
+    weakD1   = wD1;
+    weakDsq2 = wDsq2;
+    weakD2   = wD2;
+    weakDsq5 = wDsq5;
 }
 
 
@@ -125,37 +138,50 @@ double StickySquare::computePairEnergy(unsigned int particle1, const double* pos
     double normSqd = 0;
     for (unsigned int i=0;i<box.dimension;i++)  normSqd += sep[i]*sep[i];
     
-    // reject if particles overlap, or are beyond diagonal range
+    // reject if particles overlap, or are beyond sqrt(5) range
     // TOL, INF defined in Model.cpp
     if (normSqd < 1.-TOL) return INF;   // particles overlap
-    if (normSqd > 2.+TOL) return 0;     // beyond cardinal + diagonal range
+    if (normSqd > 5.+TOL) return 0;     // beyond sqrt(5) range
 
     // Only works for 2d squares
-    double energy = Neighbours::cNone;
+    double energy = 0.0;
     if(box.dimension == 2) {
-        if( normSqd < 1.+TOL ) {
-            // Cardinal neighbour (distance 1): directional bond lookup
-            if( mabs(sep[0]-1.) < TOL && mabs(sep[1]) < TOL )   // (1,0) = (2-->1 East)
-                energy = interactions.east[particle2].getVal(particle1);
-            if( mabs(sep[0]+1.) < TOL && mabs(sep[1]) < TOL )   // (-1,0) = (1-->2 East)
-                energy = interactions.east[particle1].getVal(particle2);
-            if( mabs(sep[1]-1.) < TOL && mabs(sep[0]) < TOL )   // (0,1) = (2-->1 North)
-                energy = interactions.north[particle2].getVal(particle1);
-            if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL )   // (0,-1) = (1-->2 North)
-                energy = interactions.north[particle1].getVal(particle2);
-            if(energy == Neighbours::cNone)
-                energy = interactions.crosstalk;
+        int id1 = (int)particle1 % (interactions.n0_size > 0 ? interactions.n0_size : 1);
+        int id2 = (int)particle2 % (interactions.n0_size > 0 ? interactions.n0_size : 1);
+
+        if (normSqd < 1.+TOL) {
+            // Cardinal neighbour (distance 1): directional backbone lookup
+            double backbone = Neighbours::cNone;
+            if( mabs(sep[0]-1.) < TOL && mabs(sep[1]) < TOL )
+                backbone = interactions.east[particle2].getVal(particle1);
+            if( mabs(sep[0]+1.) < TOL && mabs(sep[1]) < TOL )
+                backbone = interactions.east[particle1].getVal(particle2);
+            if( mabs(sep[1]-1.) < TOL && mabs(sep[0]) < TOL )
+                backbone = interactions.north[particle2].getVal(particle1);
+            if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL )
+                backbone = interactions.north[particle1].getVal(particle2);
+            if (backbone != Neighbours::cNone) energy += backbone;
+            else energy += interactions.crosstalk;
+            // Weak coupling (always added)
+            if (!interactions.weakD1.empty()) energy += interactions.weakD1[id1][id2];
+
+        } else if (normSqd < 2.+TOL) {
+            // Diagonal neighbour (distance sqrt(2)): direction-agnostic backbone lookup
+            double backbone = interactions.east[particle1].getVal(particle2);
+            if (backbone == Neighbours::cNone) backbone = interactions.east[particle2].getVal(particle1);
+            if (backbone != Neighbours::cNone) energy += backbone;
+            else energy += interactions.crosstalk;
+            if (!interactions.weakDsq2.empty()) energy += interactions.weakDsq2[id1][id2];
+
+        } else if (normSqd < 4.+TOL) {
+            // Distance 2: weak coupling only
+            if (!interactions.weakD2.empty()) energy += interactions.weakD2[id1][id2];
+
         } else {
-            // Diagonal neighbour (distance sqrt(2)): direction-agnostic lookup
-            energy = interactions.east[particle1].getVal(particle2);
-            if(energy == Neighbours::cNone)
-                energy = interactions.east[particle2].getVal(particle1);
-            if(energy == Neighbours::cNone)
-                energy = interactions.crosstalk;
+            // Distance sqrt(5): weak coupling only
+            if (!interactions.weakDsq5.empty()) energy += interactions.weakDsq5[id1][id2];
         }
-        if(energy == Neighbours::cNone) energy = 0;
     }
-    //cout << "energy = " << energy << endl;
     return -energy;
 }
 

@@ -41,6 +41,12 @@ run_custom: run_custom.o $(OBJ_FILES)
 run_custom.o: run_custom.cpp
 	$(CXX) -c $(FLAGS) run_custom.cpp -I$(HEADERS)
 
+run_polymer: run_polymer.o $(OBJ_FILES)
+	$(CXX) $(FLAGS) -o run_polymer $^ -I$(HEADERS)
+
+run_polymer.o: run_polymer.cpp
+	$(CXX) -c $(FLAGS) run_polymer.cpp -I$(HEADERS)
+
 clean:
 	rm -f *.o  $(OBJ_DIR)/*.o *.d $(OBJ_DIR)/*.d
 

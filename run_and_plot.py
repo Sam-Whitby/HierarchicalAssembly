@@ -72,6 +72,17 @@ def parse_args():
                    help="Random seed for --gen-bonds (default: random)")
     p.add_argument("--bond-std", type=float, default=0.3,
                    help="Std dev of bond strengths as a fraction of e1 for --gen-bonds (default: 0.3)")
+    p.add_argument("--polymer", type=int, default=None,
+                   help="Polymer size: auto-generate backbone bonds and run run_polymer. "
+                        "n0 is set to this value, one copy.")
+    p.add_argument("--weak-e", type=float, default=1.0,
+                   help="Mean weak coupling energy magnitude (default: 1.0)")
+    p.add_argument("--weak-std", type=float, default=0.5,
+                   help="Std dev of weak couplings (default: 0.5). Can be > mean (allows negative = repulsive).")
+    p.add_argument("--weak-seed", type=int, default=None,
+                   help="Random seed for weak coupling generation")
+    p.add_argument("--sim-seed", type=int, default=None,
+                   help="Random seed for the C++ simulation RNG")
 
     # Script behaviour
     p.add_argument("--no-run", action="store_true",
@@ -144,6 +155,122 @@ def generate_bond_file(n0, e1, path, std_frac=0.3, seed=None):
 
     print(f"Bond file written to {path}  ({len(written)} bonds)")
     return bonds
+
+
+def snake_path(n0):
+    """Return the snake-path bond list for a polymer of n0 particles in a sqrt(n0)×sqrt(n0) grid.
+    Returns list of (i, j) pairs that are adjacent in the snake walk."""
+    l0 = round(math.sqrt(n0))
+    assert l0 * l0 == n0, f"n0={n0} must be a perfect square for grid polymer"
+    # Build snake path: row by row, alternating direction
+    path = []
+    for row in range(l0):
+        cols = range(l0) if row % 2 == 0 else range(l0-1, -1, -1)
+        for col in cols:
+            path.append(l0 * row + col)
+    return [(path[k], path[k+1]) for k in range(len(path)-1)]
+
+
+def generate_polymer_bondfile(n0, e_backbone, e_weak, std_weak, path, seed=None):
+    """Generate an extended bond file with backbone + weak couplings at all 4 distance classes.
+
+    Returns dict of coupling matrices: {'D1': mat, 'Dsq2': mat, 'D2': mat, 'Dsq5': mat}
+    where each mat is a symmetric n0×n0 numpy array.
+    """
+    rng = np.random.default_rng(seed)
+    l0 = round(math.sqrt(n0))
+
+    backbone_bonds = snake_path(n0)
+
+    def sym_matrix(n, mean, std):
+        """Generate a symmetric n×n matrix with N(mean, std) entries (can be negative)."""
+        mat = np.zeros((n, n))
+        for i in range(n):
+            for j in range(i, n):
+                val = rng.normal(mean, std)
+                mat[i, j] = val
+                mat[j, i] = val
+        return mat
+
+    wD1   = sym_matrix(n0, e_weak, std_weak)
+    wDsq2 = sym_matrix(n0, e_weak, std_weak)
+    wD2   = sym_matrix(n0, e_weak, std_weak)
+    wDsq5 = sym_matrix(n0, e_weak, std_weak)
+
+    def write_matrix(f, mat, tag):
+        f.write(f"{tag}\n")
+        for i in range(n0):
+            for j in range(i, n0):
+                f.write(f"{i} {j} {mat[i,j]:.6f}\n")
+        f.write(f"{tag}_END\n\n")
+
+    with open(path, 'w') as f:
+        f.write(f"# Extended polymer bond file  n0={n0}  e_backbone={e_backbone}"
+                f"  e_weak={e_weak}  std_weak={std_weak}  seed={seed}\n")
+        f.write(f"# Format: BACKBONE section (strong bonds) + WEAK_D* matrices\n\n")
+
+        f.write("BACKBONE\n")
+        for (pi, pj) in backbone_bonds:
+            f.write(f"{pi} {pj} {e_backbone:.6f}\n")
+        f.write("BACKBONE_END\n\n")
+
+        write_matrix(f, wD1,   "WEAK_D1")
+        write_matrix(f, wDsq2, "WEAK_DSQRT2")
+        write_matrix(f, wD2,   "WEAK_D2")
+        write_matrix(f, wDsq5, "WEAK_DSQRT5")
+
+    print(f"Extended bond file written to {path}")
+    return {'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
+
+
+def _chain_order(n0):
+    """Return particle indices in chain sequence order (endpoints first, path traversal)."""
+    bonds = snake_path(n0)
+    adj = {}
+    for (a, b) in bonds:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, []).append(a)
+    # Find an endpoint (degree 1)
+    start = next(k for k, v in adj.items() if len(v) == 1)
+    order, prev, cur = [start], None, start
+    while len(order) < n0:
+        nexts = [x for x in adj.get(cur, []) if x != prev]
+        if not nexts:
+            break
+        nxt = nexts[0]
+        order.append(nxt)
+        prev, cur = cur, nxt
+    return order
+
+
+def write_conf_file(path, n0, box_length):
+    """Write initial config: polymer as a horizontal chain centered in the box.
+    Particles are placed in chain sequence order so all backbone bonds start satisfied."""
+    L = int(round(box_length))
+    order = _chain_order(n0)
+    x0 = max(0, L // 2 - n0 // 2)
+    y0 = L // 2
+    # Map particle index → initial position (placed in chain order along x)
+    pos = {}
+    for chain_idx, pid in enumerate(order):
+        pos[pid] = ((x0 + chain_idx) % L, y0)
+    with open(path, 'w') as f:
+        for pid in range(n0):
+            f.write(f"{pos[pid][0]} {pos[pid][1]}\n")
+    print(f"Initial config written to {path}  ({n0} particles, chain order {order})")
+
+
+def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None):
+    cmd = [exe, input_file, bond_file]
+    if conf_file:
+        cmd.append(conf_file)
+    if seed is not None:
+        cmd.append(str(seed))
+    print("Running:", " ".join(cmd))
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        sys.exit(f"Simulation failed (return code {result.returncode})")
+    print("Simulation complete.\n")
 
 
 def load_bond_file(path, n0):
@@ -455,6 +582,173 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
 
 
 # ---------------------------------------------------------------------------
+# Boltzmann validation
+# ---------------------------------------------------------------------------
+
+def conformation_key(coords_copy, L):
+    """Return a translation-invariant canonical tuple for the conformation.
+    coords_copy: numpy array shape (n0, 2) with positions of one polymer copy.
+    Uses minimum image convention for relative positions.
+    """
+    r0 = coords_copy[0]
+    rel = []
+    for i in range(1, len(coords_copy)):
+        d = coords_copy[i] - r0
+        # Minimum image
+        d = d - L * np.round(d / L)
+        rel.append((round(d[0]), round(d[1])))
+    return tuple(rel)
+
+
+def compute_conformation_energy(key, n0, coupling_matrices):
+    """Compute total weak coupling energy for a given conformation key.
+    key: tuple of (dx, dy) relative to particle 0 for particles 1..n0-1.
+    coupling_matrices: dict with 'D1', 'Dsq2', 'D2', 'Dsq5' each n0×n0 numpy arrays.
+    """
+    # Reconstruct positions: particle 0 at (0,0), others at relative positions
+    positions = np.zeros((n0, 2))
+    for i in range(1, n0):
+        positions[i] = key[i-1]
+
+    wD1   = coupling_matrices.get('D1')
+    wDsq2 = coupling_matrices.get('Dsq2')
+    wD2   = coupling_matrices.get('D2')
+    wDsq5 = coupling_matrices.get('Dsq5')
+
+    energy = 0.0
+    for i in range(n0):
+        for j in range(i+1, n0):
+            dx = positions[j, 0] - positions[i, 0]
+            dy = positions[j, 1] - positions[i, 1]
+            d2 = dx*dx + dy*dy
+            d2r = round(d2)
+            if d2r == 1 and wD1 is not None:
+                energy += wD1[i, j]
+            elif d2r == 2 and wDsq2 is not None:
+                energy += wDsq2[i, j]
+            elif d2r == 4 and wD2 is not None:
+                energy += wD2[i, j]
+            elif d2r == 5 and wDsq5 is not None:
+                energy += wDsq5[i, j]
+    return energy
+
+
+def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
+    """Compute Pearson correlation between observed and Boltzmann frequencies vs step count.
+
+    Returns:
+        step_indices: array of frame indices at which correlation was computed
+        correlations: Pearson r at each step index
+        final_obs_freq: final observed frequencies (sorted by state energy)
+        final_boltz_freq: corresponding Boltzmann frequencies
+        state_energies: energies of each unique state
+    """
+    import collections
+
+    nframes = len(frames)
+    counts = collections.Counter()
+    step_indices = []
+    correlations = []
+
+    # Compute correlation at log-spaced intervals
+    check_at = set(np.unique(np.round(np.logspace(0, np.log10(max(nframes-1, 1)), 50)).astype(int)))
+    check_at.add(nframes - 1)
+
+    for fi, frame in enumerate(frames):
+        coords_copy = frame[:n0]  # first copy only
+        key = conformation_key(coords_copy, L)
+        counts[key] += 1
+
+        if fi in check_at and len(counts) >= 2:
+            # Compute energies for all seen states
+            energies = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
+            E_vals = np.array([energies[k] for k in counts])
+            obs_counts = np.array([counts[k] for k in counts], dtype=float)
+
+            # Boltzmann weights: exp(-E) (beta=1 since energies are in kBT units)
+            boltz = np.exp(-E_vals)
+            boltz /= boltz.sum()
+            obs_freq = obs_counts / obs_counts.sum()
+
+            if len(obs_freq) >= 2 and np.std(obs_freq) > 0 and np.std(boltz) > 0:
+                r = float(np.corrcoef(obs_freq, boltz)[0, 1])
+                step_indices.append(fi)
+                correlations.append(r)
+
+    # Final state for scatter plot
+    energies = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
+    E_vals = np.array([energies[k] for k in counts])
+    obs_counts = np.array([counts[k] for k in counts], dtype=float)
+    boltz = np.exp(-E_vals)
+    boltz /= boltz.sum()
+    obs_freq = obs_counts / obs_counts.sum()
+
+    return (np.array(step_indices), np.array(correlations), obs_freq, boltz, E_vals)
+
+
+def plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, state_energies, n0):
+    """Plot Boltzmann validation: Pearson r vs steps + observed vs predicted scatter."""
+    if len(step_indices) < 2:
+        print("Not enough data for Boltzmann validation plot.")
+        return
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle(f"Boltzmann Validation  |  n0={n0}", fontsize=12)
+
+    # Left: Pearson correlation vs number of simulation steps
+    ax1.plot(step_indices, correlations, 'o-', lw=1.5, ms=4, color='steelblue')
+    ax1.axhline(1.0, color='tomato', ls='--', lw=1, label='Perfect correlation')
+    ax1.set_xlabel("Simulation frame index")
+    ax1.set_ylabel("Pearson r (observed vs Boltzmann)")
+    ax1.set_title("Convergence to Boltzmann distribution")
+    ax1.set_ylim(-0.1, 1.1)
+    ax1.legend(fontsize=8)
+    ax1.grid(True, alpha=0.3)
+    if len(step_indices) > 1:
+        ax1.set_xscale('log')
+
+    # Right: Observed vs predicted frequencies (final)
+    ax2.scatter(boltz_freq, obs_freq, c=state_energies, cmap='plasma', s=40, alpha=0.8, zorder=3)
+    lims = [0, max(boltz_freq.max(), obs_freq.max()) * 1.1]
+    ax2.plot(lims, lims, 'r--', lw=1, label='y=x (perfect)')
+    ax2.set_xlabel("Boltzmann predicted frequency")
+    ax2.set_ylabel("Observed frequency")
+    ax2.set_title(f"Observed vs Predicted  (final r={correlations[-1]:.3f})")
+    ax2.legend(fontsize=8)
+    ax2.grid(True, alpha=0.3)
+    sm = plt.cm.ScalarMappable(cmap='plasma',
+                                norm=plt.Normalize(state_energies.min(), state_energies.max()))
+    sm.set_array([])
+    fig.colorbar(sm, ax=ax2, label='State energy (kBT)')
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_weak_coupling_matrices(matrices, n0):
+    """Show the 4 weak coupling matrices in a 2x2 grid."""
+    labels = [('D1', 'Distance 1'), ('Dsq2', 'Distance sqrt(2)'), ('D2', 'Distance 2'), ('Dsq5', 'Distance sqrt(5)')]
+    fig, axes = plt.subplots(2, 2, figsize=(10, 9))
+    fig.suptitle(f"Weak Coupling Matrices  |  n0={n0}", fontsize=12)
+    for ax, (key, title) in zip(axes.flat, labels):
+        mat = matrices.get(key)
+        if mat is None:
+            ax.set_visible(False)
+            continue
+        vmax = np.abs(mat).max() or 1.0
+        im = ax.imshow(mat, cmap='RdBu_r', vmin=-vmax, vmax=vmax,
+                       origin='upper', aspect='auto', interpolation='nearest')
+        fig.colorbar(im, ax=ax, label='Energy (kBT)')
+        ax.set_title(title, fontsize=9)
+        ax.set_xlabel("Particle identity")
+        ax.set_ylabel("Particle identity")
+        tick_step = max(1, n0 // 8)
+        ticks = list(range(0, n0, tick_step))
+        ax.set_xticks(ticks); ax.set_yticks(ticks)
+    plt.tight_layout()
+    plt.show()
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -481,37 +775,92 @@ def main():
         dens = n_particles / args.L ** 2
         print(f"Box: L={args.L}, nParticles={n_particles}, dens={dens:.6f}")
 
-    # Resolve bond file / custom mode
-    custom_bonds = None
-    bond_file = args.bond_file
+    # --- Polymer mode ---
+    polymer_matrices = None
+    exe_polymer = os.path.join(script_dir, "run_polymer")
 
-    if args.gen_bonds:
-        bond_file = os.path.join(script_dir, f"{args.filehead}_bonds.txt")
-        custom_bonds = generate_bond_file(
-            args.n0, args.e1, bond_file,
-            std_frac=args.bond_std, seed=args.bond_seed,
+    if args.polymer is not None:
+        # Override n0 and ncopies
+        args.n0 = args.polymer
+        ncopies = 1  # one polymer copy for Boltzmann validation
+        n_particles = args.n0
+
+        # Recompute dens if L given
+        if args.L is not None:
+            dens = n_particles / args.L ** 2
+
+        # Generate bond file
+        bond_file = os.path.join(script_dir, f"{args.filehead}_polymer_bonds.txt")
+        polymer_matrices = generate_polymer_bondfile(
+            args.n0, args.e1, args.weak_e, args.weak_std,
+            bond_file, seed=args.weak_seed
         )
-    elif bond_file is not None:
-        custom_bonds = load_bond_file(bond_file, args.n0)
 
-    use_custom = bond_file is not None
-    exe_to_use = os.path.join(script_dir, "run_custom") if use_custom else exe
+        # Write initial config
+        box_len_for_conf = args.L if args.L else round(math.sqrt(n_particles / dens))
+        conf_file = os.path.join(script_dir, f"{args.filehead}_init.conf")
+        write_conf_file(conf_file, args.n0, box_len_for_conf)
 
-    if not args.no_run:
-        write_input_file(input_file, args.filehead, args.n0, ncopies,
-                         args.nsteps, args.nsweep, dens)
-        if use_custom:
-            run_simulation(exe_to_use, input_file, bond_file)
-        else:
-            run_simulation(exe, input_file, args.e1)
+        if not args.no_run:
+            write_input_file(input_file, args.filehead, args.n0, ncopies,
+                             args.nsteps, args.nsweep, dens)
+            run_polymer_sim(exe_polymer, input_file, bond_file, conf_file, args.sim_seed)
 
-    print("Parsing output files...")
-    steps, energy, fragment_hist = parse_stats(statsfile)
-    n_particles, box_length, n0, frames = parse_traj(trajfile)
-    print(f"  {len(frames)} frames  |  {n_particles} particles  |  box={box_length}  |  n0={n0}")
+        print("Parsing output files...")
+        steps, energy, fragment_hist = parse_stats(statsfile)
+        n_particles, box_length, n0, frames = parse_traj(trajfile)
+        print(f"  {len(frames)} frames  |  {n_particles} particles  |  box={box_length}  |  n0={n0}")
 
-    make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
-               frames, args.filehead, args.e1, custom_bonds=custom_bonds)
+        # Build backbone bond table for animation (snake-path bonds at energy e1)
+        backbone_dict = {}
+        for (pi, pj) in snake_path(n0):
+            backbone_dict[(pi, pj)] = args.e1
+            backbone_dict[(pj, pi)] = args.e1
+        make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
+                   frames, args.filehead, args.e1, custom_bonds=backbone_dict)
+
+        # Show weak coupling matrices
+        plot_weak_coupling_matrices(polymer_matrices, n0)
+
+        # Run Boltzmann validation
+        print("Running Boltzmann validation...")
+        step_indices, correlations, obs_freq, boltz_freq, state_energies = boltzmann_validation(
+            frames, n0, float(box_length), polymer_matrices, steps
+        )
+        plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, state_energies, n0)
+
+    else:
+        # Resolve bond file / custom mode
+        custom_bonds = None
+        bond_file = args.bond_file
+
+        if args.gen_bonds:
+            bond_file = os.path.join(script_dir, f"{args.filehead}_bonds.txt")
+            custom_bonds = generate_bond_file(
+                args.n0, args.e1, bond_file,
+                std_frac=args.bond_std, seed=args.bond_seed,
+            )
+        elif bond_file is not None:
+            custom_bonds = load_bond_file(bond_file, args.n0)
+
+        use_custom = bond_file is not None
+        exe_to_use = os.path.join(script_dir, "run_custom") if use_custom else exe
+
+        if not args.no_run:
+            write_input_file(input_file, args.filehead, args.n0, ncopies,
+                             args.nsteps, args.nsweep, dens)
+            if use_custom:
+                run_simulation(exe_to_use, input_file, bond_file)
+            else:
+                run_simulation(exe, input_file, args.e1)
+
+        print("Parsing output files...")
+        steps, energy, fragment_hist = parse_stats(statsfile)
+        n_particles, box_length, n0, frames = parse_traj(trajfile)
+        print(f"  {len(frames)} frames  |  {n_particles} particles  |  box={box_length}  |  n0={n0}")
+
+        make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
+                   frames, args.filehead, args.e1, custom_bonds=custom_bonds)
 
 
 if __name__ == "__main__":
