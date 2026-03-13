@@ -585,30 +585,59 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
 # Boltzmann validation
 # ---------------------------------------------------------------------------
 
+# --- Symmetry helpers for rotation+reflection invariance ---
+
+def _rot90(v):
+    """Rotate 2D vector 90° counter-clockwise."""
+    return (-v[1], v[0])
+
+def _reflx(v):
+    """Reflect 2D vector across the x-axis."""
+    return (v[0], -v[1])
+
+def _symmetry_group(positions):
+    """Return all ≤8 distinct dihedral transforms of a tuple of (x,y) pairs."""
+    versions = set()
+    cur = positions
+    for _ in range(4):
+        versions.add(cur)
+        versions.add(tuple(_reflx(p) for p in cur))
+        cur = tuple(_rot90(p) for p in cur)
+    return versions
+
+def _canonical_key(rel_positions):
+    """Canonical (lexicographically minimum) form under translation+rotation+reflection."""
+    return min(_symmetry_group(rel_positions))
+
+def _conformation_degeneracy(canonical_rel):
+    """Orbit size: number of distinct labeled conformations related by rotation/reflection."""
+    return len(_symmetry_group(canonical_rel))
+
+
 def conformation_key(coords_copy, L):
-    """Return a translation-invariant canonical tuple for the conformation.
-    coords_copy: numpy array shape (n0, 2) with positions of one polymer copy.
-    Uses minimum image convention for relative positions.
+    """Conformation key invariant under translation, rotation, and reflection.
+    coords_copy: numpy array shape (n0, 2).
     """
     r0 = coords_copy[0]
     rel = []
     for i in range(1, len(coords_copy)):
         d = coords_copy[i] - r0
-        # Minimum image
-        d = d - L * np.round(d / L)
+        d = d - L * np.round(d / L)  # minimum image
         rel.append((round(d[0]), round(d[1])))
-    return tuple(rel)
+    return _canonical_key(tuple(rel))
 
 
 def compute_conformation_energy(key, n0, coupling_matrices):
-    """Compute total weak coupling energy for a given conformation key.
-    key: tuple of (dx, dy) relative to particle 0 for particles 1..n0-1.
-    coupling_matrices: dict with 'D1', 'Dsq2', 'D2', 'Dsq5' each n0×n0 numpy arrays.
+    """Sum of weak coupling values for all pairs in the conformation.
+
+    Sign convention: positive value = attractive (C++ returns -value as pair energy).
+    Boltzmann weight = exp(+energy) [NOT exp(-energy)].
+
+    key: canonical relative position tuple for particles 1..n0-1 (relative to particle 0).
     """
-    # Reconstruct positions: particle 0 at (0,0), others at relative positions
-    positions = np.zeros((n0, 2))
-    for i in range(1, n0):
-        positions[i] = key[i-1]
+    positions = [(0, 0)]  # particle 0 at origin
+    for dx, dy in key:
+        positions.append((dx, dy))
 
     wD1   = coupling_matrices.get('D1')
     wDsq2 = coupling_matrices.get('Dsq2')
@@ -618,10 +647,9 @@ def compute_conformation_energy(key, n0, coupling_matrices):
     energy = 0.0
     for i in range(n0):
         for j in range(i+1, n0):
-            dx = positions[j, 0] - positions[i, 0]
-            dy = positions[j, 1] - positions[i, 1]
-            d2 = dx*dx + dy*dy
-            d2r = round(d2)
+            dx = positions[j][0] - positions[i][0]
+            dy = positions[j][1] - positions[i][1]
+            d2r = round(dx*dx + dy*dy)
             if d2r == 1 and wD1 is not None:
                 energy += wD1[i, j]
             elif d2r == 2 and wDsq2 is not None:
@@ -633,15 +661,51 @@ def compute_conformation_energy(key, n0, coupling_matrices):
     return energy
 
 
+def enumerate_canonical_states(n0):
+    """Enumerate all canonically distinct conformations for the n0-bead polymer chain.
+
+    Returns list of (canonical_key, example_rel_positions, degeneracy) tuples,
+    sorted by canonical_key.  example_rel_positions gives one spatial realisation.
+
+    Conformations are self-avoiding walks where each step is one of the 8 nearest
+    lattice directions (cardinal + diagonal), following the snake-path chain sequence.
+    """
+    chain_seq = _chain_order(n0)  # e.g. [0,1,3,2] for n0=4
+    steps = [(1,0),(-1,0),(0,1),(0,-1),(1,1),(1,-1),(-1,1),(-1,-1)]
+    canonical_set = {}  # key -> example rel_positions
+
+    def dfs(geom_positions, occupied):
+        if len(geom_positions) == n0:
+            # geom_positions[k] = spatial position of chain_seq[k]-th particle
+            pos_by_pid = {chain_seq[k]: geom_positions[k] for k in range(n0)}
+            p0 = pos_by_pid[0]
+            rel = tuple((pos_by_pid[pid][0]-p0[0], pos_by_pid[pid][1]-p0[1])
+                        for pid in range(1, n0))
+            key = _canonical_key(rel)
+            if key not in canonical_set:
+                canonical_set[key] = rel
+            return
+        last = geom_positions[-1]
+        for dx, dy in steps:
+            nxt = (last[0]+dx, last[1]+dy)
+            if nxt not in occupied:
+                dfs(geom_positions + [nxt], occupied | {nxt})
+
+    dfs([(0,0)], {(0,0)})
+
+    result = [(k, v, _conformation_degeneracy(k)) for k, v in canonical_set.items()]
+    result.sort(key=lambda x: x[0])
+    return result
+
+
 def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
     """Compute Pearson correlation between observed and Boltzmann frequencies vs step count.
 
+    Sign convention: C++ stores +coupling as attractive (returns -coupling as pair energy),
+    so Boltzmann weight ∝ degeneracy × exp(+E_python) where E_python = sum of coupling values.
+
     Returns:
-        step_indices: array of frame indices at which correlation was computed
-        correlations: Pearson r at each step index
-        final_obs_freq: final observed frequencies (sorted by state energy)
-        final_boltz_freq: corresponding Boltzmann frequencies
-        state_energies: energies of each unique state
+        step_indices, correlations, obs_freq, boltz_freq, E_vals
     """
     import collections
 
@@ -650,23 +714,23 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
     step_indices = []
     correlations = []
 
-    # Compute correlation at log-spaced intervals
-    check_at = set(np.unique(np.round(np.logspace(0, np.log10(max(nframes-1, 1)), 50)).astype(int)))
+    check_at = set(np.unique(np.round(
+        np.logspace(0, np.log10(max(nframes-1, 1)), 50)).astype(int)))
     check_at.add(nframes - 1)
 
     for fi, frame in enumerate(frames):
-        coords_copy = frame[:n0]  # first copy only
+        coords_copy = frame[:n0]
         key = conformation_key(coords_copy, L)
         counts[key] += 1
 
         if fi in check_at and len(counts) >= 2:
-            # Compute energies for all seen states
             energies = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
-            E_vals = np.array([energies[k] for k in counts])
+            E_vals  = np.array([energies[k] for k in counts])
+            degens  = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
             obs_counts = np.array([counts[k] for k in counts], dtype=float)
 
-            # Boltzmann weights: exp(-E) (beta=1 since energies are in kBT units)
-            boltz = np.exp(-E_vals)
+            # Boltzmann weight ∝ g × exp(+E_python)  [positive coupling = attractive in C++]
+            boltz = degens * np.exp(E_vals)
             boltz /= boltz.sum()
             obs_freq = obs_counts / obs_counts.sum()
 
@@ -676,12 +740,13 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
                 correlations.append(r)
 
     # Final state for scatter plot
-    energies = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
-    E_vals = np.array([energies[k] for k in counts])
+    energies   = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
+    E_vals     = np.array([energies[k] for k in counts])
+    degens     = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
     obs_counts = np.array([counts[k] for k in counts], dtype=float)
-    boltz = np.exp(-E_vals)
-    boltz /= boltz.sum()
-    obs_freq = obs_counts / obs_counts.sum()
+    boltz      = degens * np.exp(E_vals)
+    boltz     /= boltz.sum()
+    obs_freq   = obs_counts / obs_counts.sum()
 
     return (np.array(step_indices), np.array(correlations), obs_freq, boltz, E_vals)
 
@@ -744,6 +809,82 @@ def plot_weak_coupling_matrices(matrices, n0):
         tick_step = max(1, n0 // 8)
         ticks = list(range(0, n0, tick_step))
         ax.set_xticks(ticks); ax.set_yticks(ticks)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_all_states(n0, coupling_matrices=None):
+    """Plot every canonically distinct conformation of the n0-bead polymer chain.
+
+    Each state is shown as a small diagram: coloured circles (one per particle)
+    connected by lines along the chain backbone.  The title shows the state number,
+    degeneracy g (number of rotation/reflection copies), and, if coupling matrices
+    are provided, the weak-coupling energy.
+
+    Linear (palindromic) conformations have g=4; general shapes have g=8.
+    The Boltzmann weight of each state ∝ g × exp(+E).
+    """
+    print("Enumerating canonical states...")
+    states = enumerate_canonical_states(n0)
+    n_states = len(states)
+    print(f"  Found {n_states} canonical conformations.")
+
+    chain_seq = _chain_order(n0)          # e.g. [0,1,3,2] for n0=4
+    colours = _slot_colours(n0)
+
+    ncols = 7
+    nrows = math.ceil(n_states / ncols)
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(2.2 * ncols, 2.4 * nrows))
+    fig.suptitle(
+        f"All canonical conformations  |  n0={n0}  "
+        f"({n_states} states, g=4 linear / g=8 general)",
+        fontsize=11,
+    )
+
+    for idx, (key, example_rel, deg) in enumerate(states):
+        ax = axes.flat[idx]
+
+        # Build {particle_id: (x, y)} from example_rel
+        positions = {0: (0, 0)}
+        for pid, (dx, dy) in zip(range(1, n0), example_rel):
+            positions[pid] = (dx, dy)
+
+        # Bond lines along chain sequence
+        for k in range(len(chain_seq) - 1):
+            p1, p2 = chain_seq[k], chain_seq[k + 1]
+            x1, y1 = positions[p1]
+            x2, y2 = positions[p2]
+            ax.plot([x1, x2], [y1, y2], 'k-', lw=2, zorder=1)
+
+        # Particle circles
+        for pid in range(n0):
+            x, y = positions[pid]
+            ax.scatter(x, y, s=180,
+                       c=[colours[pid]], edgecolors='k',
+                       linewidth=0.6, zorder=2)
+
+        # Title
+        if coupling_matrices is not None:
+            E = compute_conformation_energy(key, n0, coupling_matrices)
+            title = f"{idx+1}. g={deg}  E={E:.2f}"
+        else:
+            title = f"{idx+1}. g={deg}"
+        ax.set_title(title, fontsize=6.5, pad=2)
+
+        # Axes limits
+        xs = [positions[p][0] for p in range(n0)]
+        ys = [positions[p][1] for p in range(n0)]
+        m = 0.9
+        ax.set_xlim(min(xs) - m, max(xs) + m)
+        ax.set_ylim(min(ys) - m, max(ys) + m)
+        ax.set_aspect('equal')
+        ax.axis('off')
+
+    # Hide empty cells
+    for idx in range(n_states, nrows * ncols):
+        axes.flat[idx].axis('off')
+
     plt.tight_layout()
     plt.show()
 
@@ -818,6 +959,9 @@ def main():
             backbone_dict[(pj, pi)] = args.e1
         make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                    frames, args.filehead, args.e1, custom_bonds=backbone_dict)
+
+        # Show all canonical conformations
+        plot_all_states(n0, coupling_matrices=polymer_matrices)
 
         # Show weak coupling matrices
         plot_weak_coupling_matrices(polymer_matrices, n0)
