@@ -1,0 +1,18 @@
+# Compiled binaries
+run_hier
+run_custom
+run_crosstalk
+
+# Object and dependency files
+*.o
+*.d
+obj/
+
+# Simulation output files
+*_traj.txt
+*_stats.txt
+*.gif
+*.png
+
+# Generated bond files (keep hand-crafted ones)
+hier_bonds.txt

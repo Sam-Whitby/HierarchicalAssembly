@@ -125,33 +125,38 @@ double StickySquare::computePairEnergy(unsigned int particle1, const double* pos
     double normSqd = 0;
     for (unsigned int i=0;i<box.dimension;i++)  normSqd += sep[i]*sep[i];
     
-    // reject if particles overlap, or don't touch
+    // reject if particles overlap, or are beyond diagonal range
     // TOL, INF defined in Model.cpp
     if (normSqd < 1.-TOL) return INF;   // particles overlap
-    if (normSqd > 1.+TOL) return 0;     // particles don't touch (on a square lattice)
-    
+    if (normSqd > 2.+TOL) return 0;     // beyond cardinal + diagonal range
 
     // Only works for 2d squares
-    double energy = 0;   
+    double energy = Neighbours::cNone;
     if(box.dimension == 2) {
-        if( mabs(sep[0]-1.) < TOL && mabs(sep[1]) < TOL ) {  // (1,0) = (2-->1 East)
-            energy = interactions.east[particle2].getVal(particle1);
-        }
-        if( mabs(sep[0]+1.) < TOL && mabs(sep[1]) < TOL ) {  // (-1,0) = (1-->2 East)
+        if( normSqd < 1.+TOL ) {
+            // Cardinal neighbour (distance 1): directional bond lookup
+            if( mabs(sep[0]-1.) < TOL && mabs(sep[1]) < TOL )   // (1,0) = (2-->1 East)
+                energy = interactions.east[particle2].getVal(particle1);
+            if( mabs(sep[0]+1.) < TOL && mabs(sep[1]) < TOL )   // (-1,0) = (1-->2 East)
+                energy = interactions.east[particle1].getVal(particle2);
+            if( mabs(sep[1]-1.) < TOL && mabs(sep[0]) < TOL )   // (0,1) = (2-->1 North)
+                energy = interactions.north[particle2].getVal(particle1);
+            if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL )   // (0,-1) = (1-->2 North)
+                energy = interactions.north[particle1].getVal(particle2);
+            if(energy == Neighbours::cNone)
+                energy = interactions.crosstalk;
+        } else {
+            // Diagonal neighbour (distance sqrt(2)): direction-agnostic lookup
             energy = interactions.east[particle1].getVal(particle2);
+            if(energy == Neighbours::cNone)
+                energy = interactions.east[particle2].getVal(particle1);
+            if(energy == Neighbours::cNone)
+                energy = interactions.crosstalk;
         }
-        if( mabs(sep[1]-1.) < TOL && mabs(sep[0]) < TOL ) {  // (0,1) = (2-->1 North)
-            energy = interactions.north[particle2].getVal(particle1);
-        }
-        if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL ) {  // (0,1) = (1-->2 North)
-            energy = interactions.north[particle1].getVal(particle2);
-        }
-        if(energy == Neighbours::cNone) {
-            energy = interactions.crosstalk;
-        }
+        if(energy == Neighbours::cNone) energy = 0;
     }
     //cout << "energy = " << energy << endl;
-    return -energy; 
+    return -energy;
 }
 
 // Compute pair interactions -- but ignore crosstalk (used for computing histograms)
@@ -172,34 +177,35 @@ double StickySquare::computePairEnergyNative(unsigned int particle1, const doubl
     // compute norm of separation
     double normSqd = 0;
     for (unsigned int i=0;i<box.dimension;i++)  normSqd += sep[i]*sep[i];
-    
-    // reject if particles overlap, or don't touch
+
+    // reject if particles overlap, or are beyond diagonal range
     // TOL, INF defined in Model.cpp
     if (normSqd < 1.-TOL) return INF;   // particles overlap
-    if (normSqd > 1.+TOL) return 0;     // particles don't touch (on a square lattice)
-    
+    if (normSqd > 2.+TOL) return 0;     // beyond cardinal + diagonal range
 
     // Only works for 2d squares
-    double energy = 0;   
+    double energy = Neighbours::cNone;
     if(box.dimension == 2) {
-        if( mabs(sep[0]-1.) < TOL && mabs(sep[1]) < TOL ) {  // (1,0) = (2-->1 East)
-            energy = interactions.east[particle2].getVal(particle1);
-        }
-        if( mabs(sep[0]+1.) < TOL && mabs(sep[1]) < TOL ) {  // (-1,0) = (1-->2 East)
+        if( normSqd < 1.+TOL ) {
+            // Cardinal neighbour (distance 1): directional bond lookup
+            if( mabs(sep[0]-1.) < TOL && mabs(sep[1]) < TOL )   // (1,0) = (2-->1 East)
+                energy = interactions.east[particle2].getVal(particle1);
+            if( mabs(sep[0]+1.) < TOL && mabs(sep[1]) < TOL )   // (-1,0) = (1-->2 East)
+                energy = interactions.east[particle1].getVal(particle2);
+            if( mabs(sep[1]-1.) < TOL && mabs(sep[0]) < TOL )   // (0,1) = (2-->1 North)
+                energy = interactions.north[particle2].getVal(particle1);
+            if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL )   // (0,-1) = (1-->2 North)
+                energy = interactions.north[particle1].getVal(particle2);
+        } else {
+            // Diagonal neighbour (distance sqrt(2)): direction-agnostic lookup
             energy = interactions.east[particle1].getVal(particle2);
+            if(energy == Neighbours::cNone)
+                energy = interactions.east[particle2].getVal(particle1);
         }
-        if( mabs(sep[1]-1.) < TOL && mabs(sep[0]) < TOL ) {  // (0,1) = (2-->1 North)
-            energy = interactions.north[particle2].getVal(particle1);
-        }
-        if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL ) {  // (0,1) = (1-->2 North)
-            energy = interactions.north[particle1].getVal(particle2);
-        }
-        if(energy == Neighbours::cNone) {
-            energy = 0.0;
-        }
+        if(energy == Neighbours::cNone) energy = 0;
     }
     //cout << "energy = " << energy << endl;
-    return -energy; 
+    return -energy;
 }
 
 

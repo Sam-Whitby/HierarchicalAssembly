@@ -1,6 +1,6 @@
 hier      # filehead
 16        # n
-6         # number of copies
-100        # number of steps
-400       # number of sweeps per step
-0.05      # density
+1         # number of copies
+2000        # number of steps
+1       # number of sweeps per step
+0.1111111111111111      # density

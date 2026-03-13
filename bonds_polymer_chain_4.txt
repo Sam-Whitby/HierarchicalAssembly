@@ -1,0 +1,5 @@
+# bonds_polymer_chain_4.txt  (correct version)
+# particle_i  particle_j  energy
+0 1 1000.0
+1 3 1000.0
+2 3 1000.0
