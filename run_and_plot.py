@@ -89,8 +89,22 @@ def parse_args():
     p.add_argument("--hilbert-B", type=float, default=None,
                    help="Coupling strength B for Hilbert-curve diagonal-adjacent pairs "
                         "(d=√2 in Hilbert grid). Used with --hilbert-A.")
+    p.add_argument("--hier-red", type=float, default=None,
+                   help="Coupling strength for RED bonds (finest level: pairs within same "
+                        "group of 4 consecutive Hilbert-chain positions). Activates "
+                        "hierarchical Hilbert coupling mode.")
+    p.add_argument("--hier-green", type=float, default=None,
+                   help="Coupling strength for GREEN bonds (middle level: same top-level "
+                        "quarter of chain but different group of 4).")
+    p.add_argument("--hier-blue", type=float, default=None,
+                   help="Coupling strength for BLUE bonds (coarsest level: different "
+                        "top-level quarters of the chain).")
     p.add_argument("--boltzmann", action="store_true",
                    help="Enable Boltzmann validation and canonical-state diagram (polymer mode only)")
+    p.add_argument("--denature", type=int, default=None,
+                   help="Number of equilibration steps with all weak bonds zeroed (backbone "
+                        "confinement only). Runs before the main simulation; the final "
+                        "configuration is used as the starting point for the main run.")
 
     # Script behaviour
     p.add_argument("--no-run", action="store_true",
@@ -326,6 +340,176 @@ def generate_hilbert_bondfile(n0, e_backbone, A, B, path):
     return {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
 
 
+def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path):
+    """Generate a bond file with 3-level hierarchical Hilbert-curve couplings.
+
+    Every pair (i, j) receives a coupling value determined by where in the Hilbert
+    chain traversal order they sit:
+      - RED  (level 0): same group of 4 chain positions   → e_red
+      - GREEN(level 1): same top-level quarter, different  → e_green
+      - BLUE (level 2): different top-level quarters       → e_blue
+
+    Coupling is placed in both wD1 (d=1) and wDsq2 (d=√2) matrices so that it
+    fires at any short-range physical contact.  Backbone confinement (wD2, wDsq5)
+    is added as in the Hilbert-local mode.
+
+    Returns (matrices_dict, bond_colors_dict).  bond_colors_dict maps (id_i, id_j)
+    → colour string for Hilbert-grid-adjacent non-backbone pairs (used for animation).
+    Backbone pairs are NOT included in bond_colors_dict; the caller colours them black.
+    """
+    l0 = round(math.sqrt(n0))
+    if not _is_power_of_2(l0):
+        raise ValueError(f"Hilbert-hier mode requires l0=sqrt(n0) to be a power of 2; "
+                         f"got n0={n0}, l0={l0}")
+
+    backbone_bonds = snake_path(n0)
+    backbone_set = set()
+    for (pi, pj) in backbone_bonds:
+        backbone_set.add((pi, pj))
+        backbone_set.add((pj, pi))
+
+    chain_order = _chain_order(n0)
+    chain_pos = {pid: k for k, pid in enumerate(chain_order)}
+
+    # Hilbert grid positions for each particle (for animation adjacency)
+    sfc_pos = _space_filling_positions(l0)
+    hpos = {}
+    for k, pid in enumerate(chain_order):
+        hpos[pid] = sfc_pos[k]
+
+    level_energies = [e_red, e_green, e_blue]
+
+    wD1   = np.zeros((n0, n0))
+    wDsq2 = np.zeros((n0, n0))
+    wD2   = np.zeros((n0, n0))
+    wDsq5 = np.zeros((n0, n0))
+    wD0   = np.zeros((n0, n0))
+
+    # Assign hierarchical coupling only to Hilbert-grid-adjacent non-backbone pairs,
+    # mirroring the logic of generate_hilbert_bondfile but with level-dependent values:
+    #   cardinal Hilbert neighbours (d=1 in Hilbert grid)  -> wD1   only
+    #   diagonal Hilbert neighbours (d=sqrt2 in Hilbert grid) -> wDsq2 only
+    #
+    # Placing each coupling at its native Hilbert distance means stretching a cardinal
+    # bond from d=1 to d=sqrt2 costs +val (DeltaU > 0) -> VMMC recruits the neighbour.
+    # Likewise, stretching a diagonal bond from d=sqrt2 to d=2 costs +val -> recruited.
+    # This keeps each group rigid while allowing inter-group conformational changes.
+    # Backbone pairs are excluded (confined by wD2/wDsq5; freely articulated at d=1/sqrt2).
+    n_d1, n_dsq2 = 0, 0
+    for i in range(n0):
+        for j in range(i + 1, n0):
+            if (i, j) in backbone_set:
+                continue
+            dx = hpos[j][0] - hpos[i][0]
+            dy = hpos[j][1] - hpos[i][1]
+            d2 = dx * dx + dy * dy
+            if d2 > 2:
+                continue  # not Hilbert-adjacent; no coupling
+            cp_i = chain_pos[i]
+            cp_j = chain_pos[j]
+            val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
+            if d2 == 1:
+                wD1[i, j] = wD1[j, i] = val;    n_d1 += 1
+            else:  # d2 == 2
+                wDsq2[i, j] = wDsq2[j, i] = val; n_dsq2 += 1
+
+    # Backbone confinement: repulsion at d=2 and d=√5
+    for (pi, pj) in backbone_bonds:
+        wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
+        wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
+        wD0[pi, pj]   -= e_backbone;  wD0[pj, pi]   -= e_backbone
+
+    def write_matrix(f, mat, tag):
+        f.write(f"{tag}\n")
+        for i in range(n0):
+            for j in range(i, n0):
+                f.write(f"{i} {j} {mat[i,j]:.6f}\n")
+        f.write(f"{tag}_END\n\n")
+
+    with open(path, 'w') as f:
+        f.write(f"# Hierarchical Hilbert bond file  n0={n0}  e_backbone={e_backbone}"
+                f"  e_red={e_red}  e_green={e_green}  e_blue={e_blue}\n\n")
+        f.write("BACKBONE\n")
+        f.write("BACKBONE_END\n\n")
+        write_matrix(f, wD1,   "WEAK_D1")
+        write_matrix(f, wDsq2, "WEAK_DSQRT2")
+        write_matrix(f, wD2,   "WEAK_D2")
+        write_matrix(f, wDsq5, "WEAK_DSQRT5")
+
+    print(f"Hierarchical Hilbert bond file written to {path}  "
+          f"(e_red={e_red}, e_green={e_green}, e_blue={e_blue}, "
+          f"{n_d1} cardinal pairs, {n_dsq2} diagonal pairs)")
+
+    # Build bond_colors for Hilbert-grid-adjacent non-backbone pairs (animation only)
+    bond_colors = {}
+    for i in range(n0):
+        for j in range(i + 1, n0):
+            if (i, j) in backbone_set:
+                continue
+            dx = hpos[j][0] - hpos[i][0]
+            dy = hpos[j][1] - hpos[i][1]
+            if dx * dx + dy * dy <= 2:  # Hilbert-adjacent (d=1 or d=√2 in Hilbert grid)
+                level = _hilbert_bond_level(chain_pos[i], chain_pos[j], n0)
+                col = _HIER_COLOURS[level]
+                bond_colors[(i, j)] = col
+                bond_colors[(j, i)] = col
+
+    matrices = {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
+    return matrices, bond_colors
+
+
+def generate_denatured_bondfile(n0, e_backbone, path):
+    """Generate a bond file with only backbone confinement — no weak coupling.
+
+    All weak matrices (D1, Dsq2) are zero.  The D2 and Dsq5 matrices retain
+    only the −e_backbone confinement entries for backbone-bonded pairs, so the
+    chain topology is maintained while the polymer freely explores conformations.
+    Used for the denaturation (equilibration) phase before the main simulation.
+    """
+    backbone_bonds = snake_path(n0)
+    wD2   = np.zeros((n0, n0))
+    wDsq5 = np.zeros((n0, n0))
+    wD0   = np.zeros((n0, n0))  # display-only
+
+    for (pi, pj) in backbone_bonds:
+        wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
+        wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
+        wD0[pi, pj]   -= e_backbone;  wD0[pj, pi]   -= e_backbone
+
+    def write_matrix(f, mat, tag):
+        f.write(f"{tag}\n")
+        for i in range(n0):
+            for j in range(i, n0):
+                f.write(f"{i} {j} {mat[i,j]:.6f}\n")
+        f.write(f"{tag}_END\n\n")
+
+    with open(path, 'w') as f:
+        f.write(f"# Denatured bond file  n0={n0}  e_backbone={e_backbone}\n")
+        f.write("# Weak couplings zeroed; only backbone confinement active\n\n")
+        f.write("BACKBONE\n")
+        f.write("BACKBONE_END\n\n")
+        write_matrix(f, np.zeros((n0, n0)), "WEAK_D1")
+        write_matrix(f, np.zeros((n0, n0)), "WEAK_DSQRT2")
+        write_matrix(f, wD2,               "WEAK_D2")
+        write_matrix(f, wDsq5,             "WEAK_DSQRT5")
+
+    print(f"Denatured bond file written to {path}  (backbone confinement only, weak bonds zeroed)")
+    return {'D0': wD0, 'D1': np.zeros((n0, n0)), 'Dsq2': np.zeros((n0, n0)),
+            'D2': wD2, 'Dsq5': wDsq5}
+
+
+def write_conf_from_last_frame(trajfile, confpath):
+    """Read the last frame of a trajectory file and write it as an initial config."""
+    _, _, _, frames = parse_traj(trajfile)
+    if not frames:
+        sys.exit(f"Error: no frames found in {trajfile}")
+    last = frames[-1]
+    with open(confpath, 'w') as f:
+        for x, y in last:
+            f.write(f"{int(round(x))} {int(round(y))}\n")
+    print(f"Wrote denatured final config ({len(last)} particles) to {confpath}")
+
+
 def _chain_order(n0):
     """Return particle indices in chain sequence order (endpoints first, path traversal)."""
     bonds = snake_path(n0)
@@ -349,6 +533,22 @@ def _chain_order(n0):
 def _is_power_of_2(n):
     """Return True if n is a positive power of 2."""
     return n > 0 and (n & (n - 1)) == 0
+
+
+def _hilbert_bond_level(cp_i, cp_j, n0):
+    """Return hierarchical level for a pair of chain positions.
+
+    0 = RED  : same group of 4 consecutive Hilbert-chain positions
+    1 = GREEN : same top-level quarter (n0//4 positions) but different group of 4
+    2 = BLUE  : different top-level quarters
+    """
+    top_size = max(n0 // 4, 4)
+    if cp_i // 4 == cp_j // 4:
+        return 0
+    elif cp_i // top_size == cp_j // top_size:
+        return 1
+    else:
+        return 2
 
 
 def _hilbert_d2xy(n, d):
@@ -543,6 +743,9 @@ _THERMAL_COLOURS = [
     "#bb2564", "#dc4a50", "#f17733", "#f5a535",
     "#f7d03c", "#fcf4ae",
 ]
+
+# Hierarchical bond level colours: RED (finest), GREEN (mid), BLUE (coarsest)
+_HIER_COLOURS = ['#d62728', '#2ca02c', '#1f77b4']
 THERMAL = LinearSegmentedColormap.from_list("thermal", _THERMAL_COLOURS, N=256)
 
 def _slot_colours(n0):
@@ -605,7 +808,8 @@ def _bond_segments_pbc(cx1, cy1, cx2, cy2, L):
 
 
 def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
-               frames, filehead, e1, custom_bonds=None, coupling_matrices=None):
+               frames, filehead, e1, custom_bonds=None, coupling_matrices=None,
+               bond_colors=None):
     """Animated simulation viewer.
 
     If coupling_matrices is provided (polymer mode) the right-hand panel shows the
@@ -756,7 +960,12 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                 for seg in _bond_segments_pbc(xi+0.5, yi+0.5,
                                               coords[j,0]+0.5, coords[j,1]+0.5, L):
                     segments.append(seg)
-                    seg_colors.append('black' if coupling_matrices is not None else bond_cmap(bond_norm(val)))
+                    if bond_colors is not None:
+                        seg_colors.append(bond_colors.get((id1, j % n0), 'black'))
+                    elif coupling_matrices is not None:
+                        seg_colors.append('black')
+                    else:
+                        seg_colors.append(bond_cmap(bond_norm(val)))
 
         bond_lc.set_segments(segments)
         bond_lc.set_colors(seg_colors)
@@ -1131,6 +1340,7 @@ def main():
 
     # --- Polymer mode ---
     polymer_matrices = None
+    hier_bond_colors = None
     exe_polymer = os.path.join(script_dir, "run_polymer")
 
     if args.polymer is not None:
@@ -1145,7 +1355,13 @@ def main():
 
         # Generate bond file
         bond_file = os.path.join(script_dir, f"{args.filehead}_polymer_bonds.txt")
-        if args.hilbert_A is not None or args.hilbert_B is not None:
+        if args.hier_red is not None or args.hier_green is not None or args.hier_blue is not None:
+            e_red   = args.hier_red   if args.hier_red   is not None else 0.0
+            e_green = args.hier_green if args.hier_green is not None else 0.0
+            e_blue  = args.hier_blue  if args.hier_blue  is not None else 0.0
+            polymer_matrices, hier_bond_colors = generate_hilbert_hier_bondfile(
+                args.n0, args.e1, e_red, e_green, e_blue, bond_file)
+        elif args.hilbert_A is not None or args.hilbert_B is not None:
             A = args.hilbert_A if args.hilbert_A is not None else 0.0
             B = args.hilbert_B if args.hilbert_B is not None else 0.0
             polymer_matrices = generate_hilbert_bondfile(args.n0, args.e1, A, B, bond_file)
@@ -1163,7 +1379,30 @@ def main():
         if not args.no_run:
             write_input_file(input_file, args.filehead, args.n0, ncopies,
                              args.nsteps, args.nsweep, dens)
-            run_polymer_sim(exe_polymer, input_file, bond_file, conf_file, args.sim_seed)
+
+            if args.denature is not None:
+                # Phase 1: denaturation — run with weak bonds zeroed
+                denature_head = args.filehead + "_denature"
+                denature_bond_file = os.path.join(script_dir, f"{denature_head}_bonds.txt")
+                denature_input     = os.path.join(script_dir, f"input_{denature_head}.txt")
+                denature_conf      = os.path.join(script_dir, f"{denature_head}_final.conf")
+                denature_traj      = os.path.join(script_dir, f"{denature_head}_traj.txt")
+
+                generate_denatured_bondfile(args.n0, args.e1, denature_bond_file)
+                write_input_file(denature_input, denature_head, args.n0, ncopies,
+                                 args.denature, args.nsweep, dens)
+
+                print(f"\n--- Denaturation phase ({args.denature} steps, weak bonds off) ---")
+                run_polymer_sim(exe_polymer, denature_input, denature_bond_file,
+                                conf_file, args.sim_seed)
+
+                # Extract final config from denaturation run for use as main-phase seed
+                write_conf_from_last_frame(denature_traj, denature_conf)
+
+                print(f"\n--- Main simulation phase ({args.nsteps} steps) ---")
+                run_polymer_sim(exe_polymer, input_file, bond_file, denature_conf, args.sim_seed)
+            else:
+                run_polymer_sim(exe_polymer, input_file, bond_file, conf_file, args.sim_seed)
 
         print("Parsing output files...")
         steps, energy, fragment_hist = parse_stats(statsfile)
@@ -1175,10 +1414,24 @@ def main():
         for (pi, pj) in snake_path(n0):
             backbone_dict[(pi, pj)] = args.e1
             backbone_dict[(pj, pi)] = args.e1
+
+        anim_bond_colors = None
+        if hier_bond_colors is not None:
+            # Add Hilbert-adjacent non-backbone bonds to the draw table
+            for (pi, pj) in hier_bond_colors:
+                if (pi, pj) not in backbone_dict:
+                    backbone_dict[(pi, pj)] = 1.0
+            # Per-bond colour: backbone → black, others → hierarchical colour
+            anim_bond_colors = {
+                (pi, pj): hier_bond_colors.get((pi, pj), 'black')
+                for (pi, pj) in backbone_dict
+            }
+
         # Animation window: lattice + energy + all 5 coupling matrices
         make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                    frames, args.filehead, args.e1,
-                   custom_bonds=backbone_dict, coupling_matrices=polymer_matrices)
+                   custom_bonds=backbone_dict, coupling_matrices=polymer_matrices,
+                   bond_colors=anim_bond_colors)
 
         if args.boltzmann:
             # Show all canonical conformations ranked by physical energy

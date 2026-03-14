@@ -28,6 +28,15 @@ python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
 # 64-bead polymer with Hilbert-local couplings (A=cardinal, B=diagonal)
 python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
   --e1 1000 --hilbert-A 1.0 --hilbert-B 0.5 --sim-seed 42
+
+# 64-bead polymer with 3-level hierarchical bonds (red > green > blue)
+python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
+  --e1 1000 --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --sim-seed 42
+
+# Same but with denaturation pre-equilibration (10000 steps, weak bonds off)
+python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
+  --e1 1000 --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 \
+  --denature 10000 --sim-seed 42
 ```
 
 Press **spacebar** to pause/resume the animation.
@@ -87,13 +96,33 @@ All bonding physics is encoded in the five coupling matrices. The BACKBONE secti
 
 Requires √N to be a power of 2 (e.g. N = 4, 16, 64, 256). This mode is designed for studying how spatially local coupling within the Hilbert-curve path shapes the Boltzmann distribution over conformations.
 
+**Hierarchical Hilbert couplings** (`--hier-red R --hier-green G --hier-blue B`): three-level hierarchy inspired by the Holmes-Cerfon & Wyart paper, applied to the Hilbert-curve chain. Couplings are assigned only between Hilbert-grid-adjacent non-backbone pairs, with strength determined by where the two particles sit in the chain traversal order:
+
+| Level | Chain-position condition | Coupling | Animation colour |
+|-------|--------------------------|----------|-----------------|
+| RED   | same group of 4 consecutive chain positions | `--hier-red` | red |
+| GREEN | same top-level quarter (N/4 positions), different group of 4 | `--hier-green` | green |
+| BLUE  | different top-level quarters | `--hier-blue` | blue |
+
+For N=64 (order-3 Hilbert curve) this gives 16 groups of 4 (RED), 4 groups of 16 (GREEN within a quarter), and inter-quarter contacts (BLUE). Setting `--hier-blue 0` allows the four quadrant blocks to separate from each other while each block remains internally rigid.
+
+Each coupling fires only at its native Hilbert distance:
+- Cardinal Hilbert contacts (grid d=1) are placed in `wD1` — stretching to physical d=√2 costs +val, causing VMMC to recruit the whole bonded group as a rigid cluster.
+- Diagonal Hilbert contacts (grid d=√2) are placed in `wDsq2` — stretching to physical d=2 likewise triggers cluster recruitment.
+
+Backbone-bonded pairs are excluded from all weak coupling so the chain remains freely articulated between d=1 and d=√2 at its hinge points.
+
+Requires √N to be a power of 2.
+
+**Denaturation pre-equilibration** (`--denature STEPS`): before the main simulation, runs `STEPS` steps with all weak coupling matrices zeroed (backbone confinement only). The final configuration is used as the starting point for the main run. This disperses the initial Hilbert-curve assembly so the system explores conformational space from a randomised starting state rather than the ground-state configuration.
+
 ### Animation window (polymer mode)
 
 The window contains three regions:
 
 | Panel | Contents |
 |-------|----------|
-| Left (full height) | Animated lattice: coloured particle discs (black outline), black backbone bond lines, white background |
+| Left (full height) | Animated lattice: coloured particle discs (black outline), bond lines (black for backbone; red/green/blue for hierarchical levels in `--hier-*` mode), white background |
 | Top-right | Total energy and running average vs simulation step |
 | Bottom-right (×5) | Coupling matrices D0, D1, D√2, D2, D√5 as physical-energy heatmaps (blue = attractive, red = repulsive) |
 
@@ -150,6 +179,10 @@ where `E_python = sum of coupling values` and `E_physical = −E_python`. All pl
 | `--weak-seed N` | RNG seed for coupling matrix generation |
 | `--hilbert-A A` | Coupling strength A for Hilbert cardinal neighbours. Activates Hilbert-local mode. |
 | `--hilbert-B B` | Coupling strength B for Hilbert diagonal neighbours |
+| `--hier-red R` | RED bond strength (finest level: same group of 4 chain positions). Activates hierarchical Hilbert mode. |
+| `--hier-green G` | GREEN bond strength (middle level: same top-level quarter, different group of 4) |
+| `--hier-blue B` | BLUE bond strength (coarsest level: different top-level quarters) |
+| `--denature N` | Run N pre-equilibration steps with weak bonds zeroed before the main simulation |
 | `--sim-seed N` | RNG seed for the C++ VMMC simulation |
 | `--boltzmann` | Enable canonical-state diagram and Boltzmann validation |
 
@@ -241,6 +274,9 @@ density      # volume fraction
 - `<filehead>_stats.txt`: per-step energy and fragment-size histogram
 - `<filehead>_polymer_bonds.txt`: generated extended bond file (polymer mode)
 - `<filehead>_init.conf`: generated initial configuration (polymer mode)
+- `<filehead>_denature_bonds.txt`: denatured bond file (weak bonds zeroed, `--denature` mode)
+- `<filehead>_denature_traj.txt`: trajectory from denaturation phase
+- `<filehead>_denature_final.conf`: final configuration of denaturation phase (used as main-run seed)
 
 ---
 
