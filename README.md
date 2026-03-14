@@ -37,6 +37,10 @@ python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
 python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
   --e1 1000 --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 \
   --denature 10000 --sim-seed 42
+
+# Hierarchical bonds with a soft spring backbone (k=50) instead of hard confinement
+python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
+  --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --spring-k 50 --sim-seed 42
 ```
 
 Press **spacebar** to pause/resume the animation.
@@ -114,6 +118,21 @@ Backbone-bonded pairs are excluded from all weak coupling so the chain remains f
 
 Requires √N to be a power of 2.
 
+**Spring backbone** (`--spring-k K`): replaces the hard-wall confinement (default, set by `--e1`) with a Hookean spring evaluated at the four discrete lattice distances:
+
+```
+E(d) = k * (d - 1)^2
+```
+
+| Distance | Spring energy |
+|----------|--------------|
+| d = 1    | 0            |
+| d = √2   | k·(√2−1)² ≈ 0.172k |
+| d = 2    | k            |
+| d = √5   | k·(√5−1)² ≈ 1.528k |
+
+In spring mode the backbone can adopt any length d ≥ 1 with a quadratic penalty, rather than being hard-confined to d ∈ {1, √2}. Backbone pairs are **also included** in the hierarchical level coupling at d=1 (their native Hilbert distance), so the full Hilbert ground state remains the global energy minimum. `--e1` is not used for backbone confinement when `--spring-k` is set.
+
 **Denaturation pre-equilibration** (`--denature STEPS`): before the main simulation, runs `STEPS` steps with all weak coupling matrices zeroed (backbone confinement only). The final configuration is used as the starting point for the main run. This disperses the initial Hilbert-curve assembly so the system explores conformational space from a randomised starting state rather than the ground-state configuration.
 
 ### Animation window (polymer mode)
@@ -182,6 +201,7 @@ where `E_python = sum of coupling values` and `E_physical = −E_python`. All pl
 | `--hier-red R` | RED bond strength (finest level: same group of 4 chain positions). Activates hierarchical Hilbert mode. |
 | `--hier-green G` | GREEN bond strength (middle level: same top-level quarter, different group of 4) |
 | `--hier-blue B` | BLUE bond strength (coarsest level: different top-level quarters) |
+| `--spring-k K` | Backbone spring stiffness: E(d)=k(d−1)² at each lattice distance. Replaces hard-wall confinement; backbone pairs also receive level coupling at d=1. Used with `--hier-*`. |
 | `--denature N` | Run N pre-equilibration steps with weak bonds zeroed before the main simulation |
 | `--sim-seed N` | RNG seed for the C++ VMMC simulation |
 | `--boltzmann` | Enable canonical-state diagram and Boltzmann validation |

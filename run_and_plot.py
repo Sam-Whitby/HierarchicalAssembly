@@ -99,6 +99,13 @@ def parse_args():
     p.add_argument("--hier-blue", type=float, default=None,
                    help="Coupling strength for BLUE bonds (coarsest level: different "
                         "top-level quarters of the chain).")
+    p.add_argument("--spring-k", type=float, default=None,
+                   help="Backbone spring stiffness k (hierarchical mode only). Replaces "
+                        "the hard-wall confinement (--e1) with a Hookean spring "
+                        "E(d) = k*(d-1)^2 evaluated at the discrete lattice distances "
+                        "d = sqrt(2), 2, sqrt(5). Backbone pairs also receive their "
+                        "hierarchical level coupling at d=1, so the full Hilbert ground "
+                        "state (all backbone bonds at d=1) is the energy minimum.")
     p.add_argument("--boltzmann", action="store_true",
                    help="Enable Boltzmann validation and canonical-state diagram (polymer mode only)")
     p.add_argument("--denature", type=int, default=None,
@@ -340,22 +347,36 @@ def generate_hilbert_bondfile(n0, e_backbone, A, B, path):
     return {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
 
 
-def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path):
+def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path,
+                                   spring_k=None):
     """Generate a bond file with 3-level hierarchical Hilbert-curve couplings.
 
-    Every pair (i, j) receives a coupling value determined by where in the Hilbert
-    chain traversal order they sit:
-      - RED  (level 0): same group of 4 chain positions   → e_red
-      - GREEN(level 1): same top-level quarter, different  → e_green
-      - BLUE (level 2): different top-level quarters       → e_blue
+    Coupling strength for each Hilbert-adjacent non-backbone pair is determined by
+    the hierarchical level of the two particles in the chain traversal order:
+      - RED  (level 0): same group of 4 chain positions   -> e_red
+      - GREEN(level 1): same top-level quarter, different -> e_green
+      - BLUE (level 2): different top-level quarters      -> e_blue
 
-    Coupling is placed in both wD1 (d=1) and wDsq2 (d=√2) matrices so that it
-    fires at any short-range physical contact.  Backbone confinement (wD2, wDsq5)
-    is added as in the Hilbert-local mode.
+    Each coupling fires only at the native Hilbert distance of the pair:
+      - Cardinal Hilbert neighbours (grid d=1)   -> wD1   only
+      - Diagonal Hilbert neighbours (grid d=sqrt2) -> wDsq2 only
 
-    Returns (matrices_dict, bond_colors_dict).  bond_colors_dict maps (id_i, id_j)
-    → colour string for Hilbert-grid-adjacent non-backbone pairs (used for animation).
-    Backbone pairs are NOT included in bond_colors_dict; the caller colours them black.
+    Backbone confinement (two options controlled by spring_k):
+
+      spring_k is None (default) -- hard-wall confinement:
+        Backbone pairs are excluded from level coupling and receive a large
+        repulsive entry in wD2 and wDsq5 (magnitude e_backbone), trapping
+        every bonded pair at d in {1, sqrt(2)}.
+
+      spring_k is set -- Hookean spring E(d) = spring_k*(d-1)^2:
+        Backbone pairs are INCLUDED in level coupling at d=1 (they are all
+        Hilbert-cardinal neighbours).  Spring penalties are added to wDsq2,
+        wD2, wDsq5 evaluated at d=sqrt(2), 2, sqrt(5) respectively.
+        The backbone can now adopt any d >= 1 with a quadratic energy cost.
+        The full Hilbert ground state (all backbone bonds at d=1) remains
+        the global energy minimum.  e_backbone is ignored in this mode.
+
+    Returns (matrices_dict, bond_colors_dict).
     """
     l0 = round(math.sqrt(n0))
     if not _is_power_of_2(l0):
@@ -385,16 +406,11 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path)
     wDsq5 = np.zeros((n0, n0))
     wD0   = np.zeros((n0, n0))
 
-    # Assign hierarchical coupling only to Hilbert-grid-adjacent non-backbone pairs,
-    # mirroring the logic of generate_hilbert_bondfile but with level-dependent values:
-    #   cardinal Hilbert neighbours (d=1 in Hilbert grid)  -> wD1   only
-    #   diagonal Hilbert neighbours (d=sqrt2 in Hilbert grid) -> wDsq2 only
-    #
-    # Placing each coupling at its native Hilbert distance means stretching a cardinal
-    # bond from d=1 to d=sqrt2 costs +val (DeltaU > 0) -> VMMC recruits the neighbour.
-    # Likewise, stretching a diagonal bond from d=sqrt2 to d=2 costs +val -> recruited.
-    # This keeps each group rigid while allowing inter-group conformational changes.
-    # Backbone pairs are excluded (confined by wD2/wDsq5; freely articulated at d=1/sqrt2).
+    # --- Non-backbone Hilbert-adjacent level coupling ---
+    # Cardinal neighbours (Hilbert d=1)   -> wD1   only
+    # Diagonal neighbours (Hilbert d=sqrt2) -> wDsq2 only
+    # Each coupling fires only at the native Hilbert distance so that stretching
+    # the bond costs positive DeltaU, enabling VMMC cluster recruitment.
     n_d1, n_dsq2 = 0, 0
     for i in range(n0):
         for j in range(i + 1, n0):
@@ -404,20 +420,42 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path)
             dy = hpos[j][1] - hpos[i][1]
             d2 = dx * dx + dy * dy
             if d2 > 2:
-                continue  # not Hilbert-adjacent; no coupling
+                continue
             cp_i = chain_pos[i]
             cp_j = chain_pos[j]
             val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
             if d2 == 1:
                 wD1[i, j] = wD1[j, i] = val;    n_d1 += 1
-            else:  # d2 == 2
+            else:
                 wDsq2[i, j] = wDsq2[j, i] = val; n_dsq2 += 1
 
-    # Backbone confinement: repulsion at d=2 and d=√5
-    for (pi, pj) in backbone_bonds:
-        wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
-        wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
-        wD0[pi, pj]   -= e_backbone;  wD0[pj, pi]   -= e_backbone
+    # --- Backbone coupling ---
+    if spring_k is not None:
+        # Hookean spring E(d) = spring_k*(d-1)^2 evaluated at each lattice distance.
+        # Coupling value = -E(d) so that physical energy = +E(d) (repulsive for d>1).
+        k_dsq2 = spring_k * (math.sqrt(2.0) - 1.0) ** 2   # ~0.172 * spring_k
+        k_d2   = spring_k * (2.0 - 1.0) ** 2              # = spring_k
+        k_dsq5 = spring_k * (math.sqrt(5.0) - 1.0) ** 2   # ~1.528 * spring_k
+        for (pi, pj) in backbone_bonds:
+            # Level coupling at the native d=1 distance (backbone bonds are always
+            # Hilbert-cardinal, so they belong in wD1).
+            cp_i = chain_pos[pi]
+            cp_j = chain_pos[pj]
+            val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
+            wD1[pi, pj] = wD1[pj, pi] = val
+            # Spring penalties at d > 1
+            wDsq2[pi, pj] -= k_dsq2;  wDsq2[pj, pi] -= k_dsq2
+            wD2[pi, pj]   -= k_d2;    wD2[pj, pi]   -= k_d2
+            wDsq5[pi, pj] -= k_dsq5;  wDsq5[pj, pi] -= k_dsq5
+            wD0[pi, pj]   -= k_d2;    wD0[pj, pi]   -= k_d2   # visual reference
+    else:
+        # Hard-wall confinement: large repulsion at d=2 and d=sqrt(5) only.
+        # Backbone pairs are excluded from level coupling and freely articulate
+        # between d=1 and d=sqrt(2).
+        for (pi, pj) in backbone_bonds:
+            wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
+            wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
+            wD0[pi, pj]   -= e_backbone;  wD0[pj, pi]   -= e_backbone
 
     def write_matrix(f, mat, tag):
         f.write(f"{tag}\n")
@@ -426,8 +464,10 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path)
                 f.write(f"{i} {j} {mat[i,j]:.6f}\n")
         f.write(f"{tag}_END\n\n")
 
+    backbone_desc = (f"spring_k={spring_k}" if spring_k is not None
+                     else f"e_backbone={e_backbone}")
     with open(path, 'w') as f:
-        f.write(f"# Hierarchical Hilbert bond file  n0={n0}  e_backbone={e_backbone}"
+        f.write(f"# Hierarchical Hilbert bond file  n0={n0}  {backbone_desc}"
                 f"  e_red={e_red}  e_green={e_green}  e_blue={e_blue}\n\n")
         f.write("BACKBONE\n")
         f.write("BACKBONE_END\n\n")
@@ -438,7 +478,8 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path)
 
     print(f"Hierarchical Hilbert bond file written to {path}  "
           f"(e_red={e_red}, e_green={e_green}, e_blue={e_blue}, "
-          f"{n_d1} cardinal pairs, {n_dsq2} diagonal pairs)")
+          f"{n_d1} cardinal pairs, {n_dsq2} diagonal pairs, "
+          f"backbone={'spring k='+str(spring_k) if spring_k is not None else 'hard e='+str(e_backbone)})")
 
     # Build bond_colors for Hilbert-grid-adjacent non-backbone pairs (animation only)
     bond_colors = {}
@@ -1360,7 +1401,8 @@ def main():
             e_green = args.hier_green if args.hier_green is not None else 0.0
             e_blue  = args.hier_blue  if args.hier_blue  is not None else 0.0
             polymer_matrices, hier_bond_colors = generate_hilbert_hier_bondfile(
-                args.n0, args.e1, e_red, e_green, e_blue, bond_file)
+                args.n0, args.e1, e_red, e_green, e_blue, bond_file,
+                spring_k=args.spring_k)
         elif args.hilbert_A is not None or args.hilbert_B is not None:
             A = args.hilbert_A if args.hilbert_A is not None else 0.0
             B = args.hilbert_B if args.hilbert_B is not None else 0.0
