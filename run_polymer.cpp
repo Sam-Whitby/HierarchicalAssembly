@@ -107,7 +107,7 @@ int main(int argc, char** argv)
     bool isLattice = true;
     unsigned int dimension = 2;
     double interactionRange = 2.4;   // covers cardinal(1), diagonal(sqrt2), dist2, sqrt5
-    unsigned int maxInteractions = 20; // up to 20 neighbors within sqrt(5)
+    unsigned int maxInteractions = 25; // up to 25 neighbors within sqrt(5) + backbone spring partners
     double interactionEnergy = 0;
 
     MersenneTwister rng;
@@ -120,6 +120,8 @@ int main(int argc, char** argv)
     vector<vector<double>> wD2(n0, vector<double>(n0, 0.0));
     vector<vector<double>> wDsq5(n0, vector<double>(n0, 0.0));
     bool has_weak = false;
+    double springK = 0.0;
+    vector<vector<int>> bbPartners(n0);
 
     ifstream bfile;
     bfile.open(bondfile, ifstream::in);
@@ -134,6 +136,31 @@ int main(int argc, char** argv)
         if(line.empty() || line[0] == '#') continue;
 
         // Section headers
+        if(line.find("SPRING_K_END") != string::npos) continue;
+        if(line.find("SPRING_K") != string::npos && line.find("BACKBONE") == string::npos) {
+            string kline;
+            while(getline(bfile, kline)) {
+                if(kline.empty() || kline[0] == '#') continue;
+                if(kline.find("SPRING_K_END") != string::npos) break;
+                istringstream ss2(kline); ss2 >> springK;
+            }
+            continue;
+        }
+        if(line.find("SPRING_BACKBONE_END") != string::npos) continue;
+        if(line.find("SPRING_BACKBONE") != string::npos) {
+            string bbline;
+            while(getline(bfile, bbline)) {
+                if(bbline.empty() || bbline[0] == '#') continue;
+                if(bbline.find("SPRING_BACKBONE_END") != string::npos) break;
+                istringstream ss3(bbline);
+                int pi2, pj2;
+                if(!(ss3 >> pi2 >> pj2)) continue;
+                if(pi2 < 0 || pi2 >= n0 || pj2 < 0 || pj2 >= n0) continue;
+                bbPartners[pi2].push_back(pj2);
+                bbPartners[pj2].push_back(pi2);
+            }
+            continue;
+        }
         if(line.find("BACKBONE_END") != string::npos) { in_backbone = false; continue; }
         if(line.find("BACKBONE") != string::npos)     { in_backbone = true;  continue; }
         if(line.find("WEAK_D1_END") != string::npos || line.find("WEAK_DSQRT2_END") != string::npos ||
@@ -190,7 +217,7 @@ int main(int argc, char** argv)
     // Duplicate weak matrices for nCopies (same identity matrix, just indexed by mod n0)
     // (n0_size handles the modulo, so no duplication needed for the matrices themselves)
 
-    Interactions interactions(nParticles, n0, north, east, wD1, wDsq2, wD2, wDsq5);
+    Interactions interactions(nParticles, n0, north, east, wD1, wDsq2, wD2, wDsq5, springK, bbPartners);
 
     /* ----------  Initialise data structures & classes  ---------- */
     std::vector<Particle> particles(nParticles);

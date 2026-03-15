@@ -41,6 +41,11 @@ python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
 # Hierarchical bonds with a soft spring backbone (k=50) instead of hard confinement
 python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
   --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --spring-k 50 --sim-seed 42
+
+# Non-specific mode: any two particles that share a colour level can bond (not just
+# their specific Hilbert-curve neighbour).  Spring backbone keeps the chain topology.
+python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
+  --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --spring-k 50 --unspecific --sim-seed 42
 ```
 
 Press **spacebar** to pause/resume the animation.
@@ -118,20 +123,47 @@ Backbone-bonded pairs are excluded from all weak coupling so the chain remains f
 
 Requires √N to be a power of 2.
 
-**Spring backbone** (`--spring-k K`): replaces the hard-wall confinement (default, set by `--e1`) with a Hookean spring evaluated at the four discrete lattice distances:
-
-```
-E(d) = k * (d - 1)^2
-```
+**Spring backbone** (`--spring-k K`): replaces hard-wall confinement with a pure Hookean spring E(d) = k·(d−1)²:
 
 | Distance | Spring energy |
 |----------|--------------|
-| d = 1    | 0            |
+| d = 1    | 0 (equilibrium; level coupling also fires here) |
 | d = √2   | k·(√2−1)² ≈ 0.172k |
-| d = 2    | k            |
-| d = √5   | k·(√5−1)² ≈ 1.528k |
+| d = 2    | k |
+| d = √5   | k·(√5−1)² ≈ 1.528k  ← maximum within cell-list range |
+| d > √5   | 0 (C++ cell-list cutoff, but barrier ≈ 1.528k makes escape negligible for k >> 1) |
 
-In spring mode the backbone can adopt any length d ≥ 1 with a quadratic penalty, rather than being hard-confined to d ∈ {1, √2}. Backbone pairs are **also included** in the hierarchical level coupling at d=1 (their native Hilbert distance), so the full Hilbert ground state remains the global energy minimum. `--e1` is not used for backbone confinement when `--spring-k` is set.
+The spring is implemented **entirely in C++** (`StickySquare::computePairEnergy`), not via the coupling matrices. This is necessary because the coupling matrices are only sampled at the five discrete lattice distances; the spring must also act at arbitrarily large separations (e.g. during a VMMC cluster move that temporarily stretches a backbone bond). The C++ override works as follows:
+
+1. `computeInteractions` is overridden to always add backbone partners to the neighbour list, regardless of their current physical distance (bypassing the cell-list cutoff).
+2. `computePairEnergy` is overridden to return `k·(d−1)²` for any backbone pair, computed from the actual MIC distance, plus the `wD1` level coupling at d=1.
+3. `computeEnergy` is overridden accordingly to use the above two methods.
+
+Backbone pairs are **included** in the hierarchical level coupling at d=1. `--e1` is not used in spring mode.
+
+**Coupling matrix display with spring backbone:** even though the spring energy is computed on the fly in C++, the coupling matrix panels in the animation display are still populated with the correct **static** spring penalties for display purposes:
+- `D1`: level coupling only (spring is zero at equilibrium d=1)
+- `Dsq2`: repulsive spring penalty k·(√2−1)² for backbone pairs; level coupling for non-backbone Hilbert-diagonal pairs
+- `D2`, `Dsq5`: repulsive spring penalties for backbone pairs
+- `D0`: uniform repulsive marker for **all** particle pairs (representing the universal hard-sphere exclusion at d=0; C++ handles this as INF regardless)
+
+In the colour scheme: **red = repulsive**, **blue = attractive**.
+
+**Important:** do not substitute a flat hard-wall at d=2 and d=√5. Equal energy at both distances creates a plateau, after which d>√5 (energy 0) is thermodynamically downhill — escape is actually favoured. The pure spring avoids this by making d=√5 a strict maximum.
+
+**Non-specific bonding** (`--unspecific`): in the default (specific) mode, level coupling fires only when particle i is physically adjacent to its specific Hilbert-curve partner j at the correct distance. With `--unspecific`, **any two particles** whose chain positions place them in the same colour level can attract each other whenever they happen to be at physical d=1 or d=√2:
+
+| Level | Condition | Energy at d=1 and d=√2 |
+|-------|-----------|------------------------|
+| RED   | same group of 4 chain positions (`cp // 4` identical) | `--hier-red` |
+| GREEN | same top-level quarter, different group of 4 | `--hier-green` |
+| BLUE  | different top-level quarters | `--hier-blue` |
+
+This is the maximum generalisation: every close pair of particles gets some attractive coupling based on their chain-position relationship, not just those that are neighbours in the Hilbert curve.
+
+*Will the Hilbert curve still be the lowest-energy structure?* **Probably not.** In specific mode the Hilbert curve uniquely maximises coupling because each coupling fires only for its one specific partner. In non-specific mode the energy depends on how many same-level contacts happen to be at d=1 or d=√2. Compact cluster configurations — where all members of a RED group (4 particles) are packed into a 2×2 block, providing 6 pairwise contacts at RED energy rather than the 3 available in a linear chain segment — can have lower energy than the Hilbert-curve layout. The competition is controlled by the ratio `e_red / k`: for large `k` the backbone stiffness prevents clustering; for large `e_red` compact clusters win. The Hilbert curve is the ground state only in the limit k → ∞.
+
+In the animation, `--unspecific` causes bond lines to be drawn between **any** physically close pair (not just Hilbert-adjacent pairs), coloured by level: red/green/blue as appropriate.
 
 **Denaturation pre-equilibration** (`--denature STEPS`): before the main simulation, runs `STEPS` steps with all weak coupling matrices zeroed (backbone confinement only). The final configuration is used as the starting point for the main run. This disperses the initial Hilbert-curve assembly so the system explores conformational space from a randomised starting state rather than the ground-state configuration.
 
@@ -141,11 +173,20 @@ The window contains three regions:
 
 | Panel | Contents |
 |-------|----------|
-| Left (full height) | Animated lattice: coloured particle discs (black outline), bond lines (black for backbone; red/green/blue for hierarchical levels in `--hier-*` mode), white background |
+| Left (full height) | Animated lattice: coloured particle discs (black outline), two-layer bond drawing (see below), white background |
 | Top-right | Total energy and running average vs simulation step |
-| Bottom-right (×5) | Coupling matrices D0, D1, D√2, D2, D√5 as physical-energy heatmaps (blue = attractive, red = repulsive) |
+| Bottom-right (×5) | Coupling matrices D0, D1, D√2, D2, D√5 as static physical-energy heatmaps |
 
-The coupling matrices are static. Their colour scale is symmetric about zero so the sign of each entry is immediately visible. D0 is display-only (hard sphere handled by C++).
+**Two-layer bond drawing:** bonds are drawn in two overlapping layers so that backbone topology and hierarchical coupling can both be seen at once.
+1. **Coloured layer** (wide, semi-transparent, zorder=1): red/green/blue according to the hierarchical level of the pair. Backbone pairs also receive their level colour here, so the chain's colour hierarchy is always visible.
+2. **Black backbone layer** (thin, opaque, zorder=2): drawn on top for every backbone pair regardless of physical distance (i.e. stretched backbone bonds are shown crossing the periodic boundary if necessary).
+
+**Coupling matrix colour scale:** symmetric around zero; **red = repulsive (positive physical energy)**, **blue = attractive (negative physical energy)**. The matrix sign convention is: positive stored value = attractive (C++ returns `−stored` as the pair energy). The five panels show:
+- `D0`: hard-sphere repulsion marker (uniform for all pairs; C++ returns +∞ regardless)
+- `D1`: level coupling values; for spring mode, backbone pairs show their level coupling (zero if `--hier-*` are all 0)
+- `Dsq2`, `D2`, `Dsq5`: level coupling for non-backbone Hilbert pairs; in spring mode, backbone pairs show static spring penalties k·(d−1)² (repulsive, red)
+
+The coupling matrices are **static** — they are computed once from the bond file parameters and do not change during the animation.
 
 ### Boltzmann validation (`--boltzmann`)
 
@@ -201,7 +242,8 @@ where `E_python = sum of coupling values` and `E_physical = −E_python`. All pl
 | `--hier-red R` | RED bond strength (finest level: same group of 4 chain positions). Activates hierarchical Hilbert mode. |
 | `--hier-green G` | GREEN bond strength (middle level: same top-level quarter, different group of 4) |
 | `--hier-blue B` | BLUE bond strength (coarsest level: different top-level quarters) |
-| `--spring-k K` | Backbone spring stiffness: E(d)=k(d−1)² at each lattice distance. Replaces hard-wall confinement; backbone pairs also receive level coupling at d=1. Used with `--hier-*`. |
+| `--spring-k K` | Backbone spring stiffness: pure Hookean spring E(d)=k·(d−1)² implemented in C++ at all distances. Energy increases strictly with d; barrier ≈1.528k at d=√5. Use k >> 1 (e.g. k=10–50) to prevent thermal escape. Backbone pairs also receive level coupling at d=1. `--e1` is not used. |
+| `--unspecific` | Non-specific bonding: every particle pair (i,j) can form a bond at the level energy corresponding to their chain positions (RED/GREEN/BLUE), regardless of whether they are Hilbert-curve neighbours. The coupling fires at any physical d=1 or d=√2. Only meaningful with `--hier-*`. |
 | `--denature N` | Run N pre-equilibration steps with weak bonds zeroed before the main simulation |
 | `--sim-seed N` | RNG seed for the C++ VMMC simulation |
 | `--boltzmann` | Enable canonical-state diagram and Boltzmann validation |
@@ -223,7 +265,7 @@ Bonds are omni-directional and active at both d=1 and d=√2.
 
 ```
 BACKBONE
-# (empty when using confinement encoding)
+# (empty when using confinement encoding; directional backbone bonds listed here otherwise)
 BACKBONE_END
 
 WEAK_D1
@@ -242,9 +284,24 @@ WEAK_D2_END
 WEAK_DSQRT5
 ...
 WEAK_DSQRT5_END
+
+# Optional spring backbone sections (written when --spring-k is set):
+
+SPRING_K
+10.000000
+SPRING_K_END
+
+SPRING_BACKBONE
+0 1
+1 2
+2 3
+...
+SPRING_BACKBONE_END
 ```
 
 Entries in WEAK_D* sections are upper-triangle (i ≤ j); the matrix is symmetric. Positive values are attractive; negative values are repulsive.
+
+The `SPRING_K` section contains a single float: the spring stiffness k. The `SPRING_BACKBONE` section lists all backbone bond pairs (one per line, both orderings accepted — the C++ reader symmetrises). When these sections are present, the C++ simulation ignores the wDsq2/wD2/wDsq5 entries for backbone pairs and computes E(d) = k·(d−1)² on the fly instead. **Every backbone pair must be listed** — pairs listed as `pi pj` only (not `pj pi`) are fine because the reader adds both directions.
 
 ---
 

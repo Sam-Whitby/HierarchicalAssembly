@@ -50,12 +50,20 @@ public:
     vector<vector<double>> weakDsq2;   // distance sqrt(2) (diagonal)
     vector<vector<double>> weakD2;     // distance 2
     vector<vector<double>> weakDsq5;   // distance sqrt(5) (knight's move)
+    // Backbone spring (unlimited range)
+    double backboneSpringK = 0.0;            // spring stiffness k; 0 = disabled
+    vector<vector<int>> backbonePartners;    // backbonePartners[id] = list of backbone partner IDs
     Interactions(int,vector<Triple>&,vector<Triple>&);   // constructor: nParticples, TriplesNorth, TriplesEast
     Interactions(int,vector<Triple>&,vector<Triple>&,double);   // constructor: nParticples, TriplesNorth, TriplesEast, crosstalk
     Interactions(int nParticles, int n0,
                  vector<Triple>& north, vector<Triple>& east,
                  vector<vector<double>>& wD1, vector<vector<double>>& wDsq2,
                  vector<vector<double>>& wD2,  vector<vector<double>>& wDsq5);
+    Interactions(int nParticles, int n0,
+                 vector<Triple>& north, vector<Triple>& east,
+                 vector<vector<double>>& wD1, vector<vector<double>>& wDsq2,
+                 vector<vector<double>>& wD2,  vector<vector<double>>& wDsq5,
+                 double springK, vector<vector<int>>& bbPartners);
 
     void printInteractions(vector<Neighbours>&);
 };
@@ -106,6 +114,9 @@ public:
 
     // Same as above, but doesn't include crosstalk in pair interaction
     double computePairEnergyNative(unsigned int, const double*, const double*, unsigned int, const double*, const double*);
+
+    unsigned int computeInteractions(unsigned int, const double*, const double*, unsigned int*);
+    double computeEnergy(unsigned int, const double*, const double*);
 
     // Calculate the histogram of fragment sizes
     //   Input: 

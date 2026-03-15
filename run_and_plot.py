@@ -106,6 +106,14 @@ def parse_args():
                         "d = sqrt(2), 2, sqrt(5). Backbone pairs also receive their "
                         "hierarchical level coupling at d=1, so the full Hilbert ground "
                         "state (all backbone bonds at d=1) is the energy minimum.")
+    p.add_argument("--unspecific", action="store_true",
+                   help="Non-specific bonding mode (hierarchical mode only): every pair of "
+                        "particles (i, j) can form a bond at the colour-level energy determined "
+                        "by their positions in the Hilbert chain, regardless of whether they are "
+                        "Hilbert-curve neighbours.  The level is still RED/GREEN/BLUE based on "
+                        "chain-position proximity; the only change is that the interaction fires "
+                        "at any physical distance d=1 or d=sqrt(2), not just when the pair are "
+                        "Hilbert-adjacent.")
     p.add_argument("--boltzmann", action="store_true",
                    help="Enable Boltzmann validation and canonical-state diagram (polymer mode only)")
     p.add_argument("--denature", type=int, default=None,
@@ -348,7 +356,7 @@ def generate_hilbert_bondfile(n0, e_backbone, A, B, path):
 
 
 def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path,
-                                   spring_k=None):
+                                   spring_k=None, unspecific=False):
     """Generate a bond file with 3-level hierarchical Hilbert-curve couplings.
 
     Coupling strength for each Hilbert-adjacent non-backbone pair is determined by
@@ -368,13 +376,12 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path,
         repulsive entry in wD2 and wDsq5 (magnitude e_backbone), trapping
         every bonded pair at d in {1, sqrt(2)}.
 
-      spring_k is set -- Hookean spring E(d) = spring_k*(d-1)^2:
-        Backbone pairs are INCLUDED in level coupling at d=1 (they are all
-        Hilbert-cardinal neighbours).  Spring penalties are added to wDsq2,
-        wD2, wDsq5 evaluated at d=sqrt(2), 2, sqrt(5) respectively.
-        The backbone can now adopt any d >= 1 with a quadratic energy cost.
-        The full Hilbert ground state (all backbone bonds at d=1) remains
-        the global energy minimum.  e_backbone is ignored in this mode.
+      spring_k is set -- pure Hookean spring E(d) = spring_k*(d-1)^2:
+        Backbone pairs receive level coupling at d=1 (wD1) and spring
+        penalties at d=sqrt(2), d=2, and d=sqrt(5) (strictly increasing).
+        The maximum barrier is E(sqrt(5)) ~ 1.528*spring_k; choose
+        spring_k >> 1 so this barrier is large compared to kBT.
+        e_backbone is not used in spring mode.
 
     Returns (matrices_dict, bond_colors_dict).
     """
@@ -406,52 +413,61 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path,
     wDsq5 = np.zeros((n0, n0))
     wD0   = np.zeros((n0, n0))
 
-    # --- Non-backbone Hilbert-adjacent level coupling ---
-    # Cardinal neighbours (Hilbert d=1)   -> wD1   only
-    # Diagonal neighbours (Hilbert d=sqrt2) -> wDsq2 only
-    # Each coupling fires only at the native Hilbert distance so that stretching
-    # the bond costs positive DeltaU, enabling VMMC cluster recruitment.
+    # --- Level coupling ---
+    # Specific mode: only Hilbert-adjacent pairs, firing at their native Hilbert distance.
+    # Unspecific mode: ALL pairs (i,j) can bond at the level energy corresponding to their
+    #   chain-position relationship; coupling fires at any physical d=1 or d=sqrt(2).
     n_d1, n_dsq2 = 0, 0
-    for i in range(n0):
-        for j in range(i + 1, n0):
-            if (i, j) in backbone_set:
-                continue
-            dx = hpos[j][0] - hpos[i][0]
-            dy = hpos[j][1] - hpos[i][1]
-            d2 = dx * dx + dy * dy
-            if d2 > 2:
-                continue
-            cp_i = chain_pos[i]
-            cp_j = chain_pos[j]
-            val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
-            if d2 == 1:
-                wD1[i, j] = wD1[j, i] = val;    n_d1 += 1
-            else:
-                wDsq2[i, j] = wDsq2[j, i] = val; n_dsq2 += 1
+    if unspecific:
+        for i in range(n0):
+            for j in range(i + 1, n0):
+                cp_i = chain_pos[i]
+                cp_j = chain_pos[j]
+                val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
+                wD1[i, j] = wD1[j, i] = val
+                wDsq2[i, j] = wDsq2[j, i] = val
+                n_d1 += 1  # count all pairs (d1 and dsq2 share the same energy)
+    else:
+        for i in range(n0):
+            for j in range(i + 1, n0):
+                dx = hpos[j][0] - hpos[i][0]
+                dy = hpos[j][1] - hpos[i][1]
+                d2 = dx * dx + dy * dy
+                if d2 > 2:
+                    continue
+                cp_i = chain_pos[i]
+                cp_j = chain_pos[j]
+                val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
+                if d2 == 1:
+                    wD1[i, j] = wD1[j, i] = val;    n_d1 += 1
+                else:
+                    wDsq2[i, j] = wDsq2[j, i] = val; n_dsq2 += 1
 
     # --- Backbone coupling ---
     if spring_k is not None:
-        # Hookean spring E(d) = spring_k*(d-1)^2 evaluated at each lattice distance.
-        # Coupling value = -E(d) so that physical energy = +E(d) (repulsive for d>1).
-        k_dsq2 = spring_k * (math.sqrt(2.0) - 1.0) ** 2   # ~0.172 * spring_k
-        k_d2   = spring_k * (2.0 - 1.0) ** 2              # = spring_k
-        k_dsq5 = spring_k * (math.sqrt(5.0) - 1.0) ** 2   # ~1.528 * spring_k
+        # Spring energy is computed on the fly in C++ (StickySquare::computePairEnergy early-return
+        # for backbone pairs), so wDsq2/wD2/wDsq5 values for backbone pairs are never used by the
+        # simulation.  We populate them here for display purposes so the coupling matrix panels
+        # show the correct static spring penalties E(d) = spring_k*(d-1)^2.
+        # Sign convention: positive matrix value = attractive (C++ returns -energy); negative =
+        # repulsive.  Spring penalties are repulsive (E > 0), so stored as negative.
+        sqrt2 = math.sqrt(2.0)
+        sqrt5 = math.sqrt(5.0)
         for (pi, pj) in backbone_bonds:
-            # Level coupling at the native d=1 distance (backbone bonds are always
-            # Hilbert-cardinal, so they belong in wD1).
-            cp_i = chain_pos[pi]
-            cp_j = chain_pos[pj]
-            val = level_energies[_hilbert_bond_level(cp_i, cp_j, n0)]
-            wD1[pi, pj] = wD1[pj, pi] = val
-            # Spring penalties at d > 1
-            wDsq2[pi, pj] -= k_dsq2;  wDsq2[pj, pi] -= k_dsq2
-            wD2[pi, pj]   -= k_d2;    wD2[pj, pi]   -= k_d2
-            wDsq5[pi, pj] -= k_dsq5;  wDsq5[pj, pi] -= k_dsq5
-            wD0[pi, pj]   -= k_d2;    wD0[pj, pi]   -= k_d2   # visual reference
+            # wD1 already carries the level coupling for this pair from the main loop above.
+            # Spring energy at d=1 is zero (equilibrium), so no spring term added here.
+            wDsq2[pi, pj] = wDsq2[pj, pi] = -spring_k * (sqrt2 - 1.0) ** 2
+            wD2[pi, pj]   = wD2[pj, pi]   = -spring_k * (2.0  - 1.0) ** 2
+            wDsq5[pi, pj] = wDsq5[pj, pi] = -spring_k * (sqrt5 - 1.0) ** 2
+        # D0: hard sphere applies to ALL particle pairs at d=0.
+        # Store a uniform repulsive marker (negative = repulsive in display convention).
+        for i in range(n0):
+            for j in range(n0):
+                if i != j:
+                    wD0[i, j] = -1.0
     else:
         # Hard-wall confinement: large repulsion at d=2 and d=sqrt(5) only.
-        # Backbone pairs are excluded from level coupling and freely articulate
-        # between d=1 and d=sqrt(2).
+        # Level coupling at d=1 is already set in wD1 by the main loop above.
         for (pi, pj) in backbone_bonds:
             wD2[pi, pj]   -= e_backbone;  wD2[pj, pi]   -= e_backbone
             wDsq5[pi, pj] -= e_backbone;  wDsq5[pj, pi] -= e_backbone
@@ -475,28 +491,45 @@ def generate_hilbert_hier_bondfile(n0, e_backbone, e_red, e_green, e_blue, path,
         write_matrix(f, wDsq2, "WEAK_DSQRT2")
         write_matrix(f, wD2,   "WEAK_D2")
         write_matrix(f, wDsq5, "WEAK_DSQRT5")
+        if spring_k is not None:
+            f.write(f"SPRING_K\n{spring_k:.6f}\nSPRING_K_END\n\n")
+            f.write("SPRING_BACKBONE\n")
+            for (pi, pj) in backbone_bonds:
+                f.write(f"{pi} {pj}\n")
+            f.write("SPRING_BACKBONE_END\n\n")
 
+    mode_str = "unspecific" if unspecific else "specific"
+    pair_str = (f"{n_d1} pairs (all, d1+dsq2)" if unspecific
+                else f"{n_d1} cardinal + {n_dsq2} diagonal pairs")
     print(f"Hierarchical Hilbert bond file written to {path}  "
           f"(e_red={e_red}, e_green={e_green}, e_blue={e_blue}, "
-          f"{n_d1} cardinal pairs, {n_dsq2} diagonal pairs, "
+          f"{pair_str}, mode={mode_str}, "
           f"backbone={'spring k='+str(spring_k) if spring_k is not None else 'hard e='+str(e_backbone)})")
 
-    # Build bond_colors for Hilbert-grid-adjacent non-backbone pairs (animation only)
+    # Build bond_colors for animation display.
+    # Specific:   only Hilbert-adjacent pairs (drawn only when physically close).
+    # Unspecific: all pairs — animation will draw whichever are physically close each frame.
     bond_colors = {}
-    for i in range(n0):
-        for j in range(i + 1, n0):
-            if (i, j) in backbone_set:
-                continue
-            dx = hpos[j][0] - hpos[i][0]
-            dy = hpos[j][1] - hpos[i][1]
-            if dx * dx + dy * dy <= 2:  # Hilbert-adjacent (d=1 or d=√2 in Hilbert grid)
+    if unspecific:
+        for i in range(n0):
+            for j in range(i + 1, n0):
                 level = _hilbert_bond_level(chain_pos[i], chain_pos[j], n0)
                 col = _HIER_COLOURS[level]
                 bond_colors[(i, j)] = col
                 bond_colors[(j, i)] = col
+    else:
+        for i in range(n0):
+            for j in range(i + 1, n0):
+                dx = hpos[j][0] - hpos[i][0]
+                dy = hpos[j][1] - hpos[i][1]
+                if dx * dx + dy * dy <= 2:
+                    level = _hilbert_bond_level(chain_pos[i], chain_pos[j], n0)
+                    col = _HIER_COLOURS[level]
+                    bond_colors[(i, j)] = col
+                    bond_colors[(j, i)] = col
 
     matrices = {'D0': wD0, 'D1': wD1, 'Dsq2': wDsq2, 'D2': wD2, 'Dsq5': wDsq5}
-    return matrices, bond_colors
+    return matrices, bond_colors, backbone_set
 
 
 def generate_denatured_bondfile(n0, e_backbone, path):
@@ -850,7 +883,7 @@ def _bond_segments_pbc(cx1, cy1, cx2, cy2, L):
 
 def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                frames, filehead, e1, custom_bonds=None, coupling_matrices=None,
-               bond_colors=None):
+               bond_colors=None, backbone_pairs=None):
     """Animated simulation viewer.
 
     If coupling_matrices is provided (polymer mode) the right-hand panel shows the
@@ -887,10 +920,12 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
             if mat is None:
                 ax.axis('off')
                 continue
-            phys = -mat  # physical energy: negative = attractive
+            # Matrix stores: positive = attractive (C++ returns -mat as energy).
+            # phys = -mat: positive phys = repulsive (red), negative phys = attractive (blue).
+            phys = -mat
             vmax = np.abs(phys).max() or 1.0
             im = ax.imshow(phys, cmap='RdBu', vmin=-vmax, vmax=vmax,
-                           origin='upper', aspect='auto', interpolation='nearest')
+                           origin='upper', aspect='equal', interpolation='nearest')
             ax.set_title(title, fontsize=7, pad=3)
             ax.set_xlabel("id", fontsize=6)
             ax.set_ylabel("id", fontsize=6)
@@ -899,7 +934,7 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
             ax.set_xticks(ticks); ax.set_yticks(ticks)
             ax.tick_params(labelsize=5)
             fig.colorbar(im, ax=ax, shrink=0.85, pad=0.04,
-                         label='E phys\n(kBT)').ax.tick_params(labelsize=5)
+                         label='E (kBT)\nred=repulsive\nblue=attractive').ax.tick_params(labelsize=5)
 
     else:
         # Classic mode: lattice | energy | bond-strength matrix
@@ -943,8 +978,10 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
     ax_lat.set_ylabel("y")
     lat_title = ax_lat.set_title("Step 0", fontsize=10)
 
-    bond_lc = LineCollection([], linewidths=2.5, alpha=0.85, zorder=1)
-    ax_lat.add_collection(bond_lc)
+    colored_lc = LineCollection([], linewidths=3.5, alpha=0.85, zorder=1)
+    backbone_lc = LineCollection([], linewidths=1.5, colors='black', alpha=0.9, zorder=2)
+    ax_lat.add_collection(colored_lc)
+    ax_lat.add_collection(backbone_lc)
 
     circles = []
     for i, (x, y) in enumerate(frames[0]):
@@ -986,7 +1023,10 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
 
         # Rebuild bond segments for this frame
         pos_map = {(int(coords[i, 0]), int(coords[i, 1])): i for i in range(n_particles)}
-        segments, seg_colors = [], []
+        col_segs, col_colors = [], []
+        back_segs = []
+
+        # --- Non-backbone bonds: only draw when physically close (d=1 or d=√2) ---
         for i in range(n_particles):
             xi, yi = int(coords[i, 0]), int(coords[i, 1])
             id1 = i % n0
@@ -995,24 +1035,53 @@ def make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                 j = pos_map.get(((xi + dxi) % iL, (yi + dyi) % iL))
                 if j is None:
                     continue
-                val = bond_table.get((id1, j % n0), 0)
+                id2 = j % n0
+                # Backbone pairs are handled separately below
+                if backbone_pairs is not None and (id1, id2) in backbone_pairs:
+                    continue
+                val = bond_table.get((id1, id2), 0)
                 if val <= 0:
                     continue
-                for seg in _bond_segments_pbc(xi+0.5, yi+0.5,
-                                              coords[j,0]+0.5, coords[j,1]+0.5, L):
-                    segments.append(seg)
-                    if bond_colors is not None:
-                        seg_colors.append(bond_colors.get((id1, j % n0), 'black'))
-                    elif coupling_matrices is not None:
-                        seg_colors.append('black')
-                    else:
-                        seg_colors.append(bond_cmap(bond_norm(val)))
+                segs = _bond_segments_pbc(xi+0.5, yi+0.5,
+                                          coords[j,0]+0.5, coords[j,1]+0.5, L)
+                if bond_colors is not None:
+                    col = bond_colors.get((id1, id2), 'black')
+                    col_segs.extend(segs)
+                    col_colors.extend([col] * len(segs))
+                elif coupling_matrices is not None:
+                    back_segs.extend(segs)
+                else:
+                    c = bond_cmap(bond_norm(val))
+                    col_segs.extend(segs)
+                    col_colors.extend([c] * len(segs))
 
-        bond_lc.set_segments(segments)
-        bond_lc.set_colors(seg_colors)
+        # --- Backbone pairs: always draw at current physical distance (any d) ---
+        if backbone_pairs is not None:
+            seen = set()
+            for (bi, bj) in backbone_pairs:
+                if bi >= bj:
+                    continue  # process each unordered pair once
+                if (bi, bj) in seen:
+                    continue
+                seen.add((bi, bj))
+                xi, yi = coords[bi, 0], coords[bi, 1]
+                xj, yj = coords[bj, 0], coords[bj, 1]
+                segs = _bond_segments_pbc(xi+0.5, yi+0.5, xj+0.5, yj+0.5, L)
+                # Colored layer (hierarchical bond color, wider, below)
+                if bond_colors is not None:
+                    col = bond_colors.get((bi, bj), '#888888')
+                    col_segs.extend(segs)
+                    col_colors.extend([col] * len(segs))
+                # Black backbone layer (thinner, on top) — always
+                back_segs.extend(segs)
+
+        colored_lc.set_segments(col_segs)
+        if col_colors:
+            colored_lc.set_colors(col_colors)
+        backbone_lc.set_segments(back_segs)
         lat_title.set_text(f"Step {int(steps[frame_idx])}")
         vline.set_xdata([steps[frame_idx], steps[frame_idx]])
-        return circles + [bond_lc, lat_title, vline]
+        return circles + [colored_lc, backbone_lc, lat_title, vline]
 
     anim = animation.FuncAnimation(
         fig, update, frames=len(indices), interval=50, blit=False,
@@ -1400,9 +1469,9 @@ def main():
             e_red   = args.hier_red   if args.hier_red   is not None else 0.0
             e_green = args.hier_green if args.hier_green is not None else 0.0
             e_blue  = args.hier_blue  if args.hier_blue  is not None else 0.0
-            polymer_matrices, hier_bond_colors = generate_hilbert_hier_bondfile(
+            polymer_matrices, hier_bond_colors, _ = generate_hilbert_hier_bondfile(
                 args.n0, args.e1, e_red, e_green, e_blue, bond_file,
-                spring_k=args.spring_k)
+                spring_k=args.spring_k, unspecific=args.unspecific)
         elif args.hilbert_A is not None or args.hilbert_B is not None:
             A = args.hilbert_A if args.hilbert_A is not None else 0.0
             B = args.hilbert_B if args.hilbert_B is not None else 0.0
@@ -1451,29 +1520,30 @@ def main():
         n_particles, box_length, n0, frames = parse_traj(trajfile)
         print(f"  {len(frames)} frames  |  {n_particles} particles  |  box={box_length}  |  n0={n0}")
 
-        # Build backbone bond table for animation (snake-path bonds at energy e1)
+        # Build backbone pair set and bond table for animation
+        backbone_pair_set = set()
         backbone_dict = {}
         for (pi, pj) in snake_path(n0):
+            backbone_pair_set.add((pi, pj))
+            backbone_pair_set.add((pj, pi))
             backbone_dict[(pi, pj)] = args.e1
             backbone_dict[(pj, pi)] = args.e1
 
         anim_bond_colors = None
         if hier_bond_colors is not None:
-            # Add Hilbert-adjacent non-backbone bonds to the draw table
+            # Add Hilbert-adjacent non-backbone bonds to the draw table (for neighbor loop)
             for (pi, pj) in hier_bond_colors:
                 if (pi, pj) not in backbone_dict:
                     backbone_dict[(pi, pj)] = 1.0
-            # Per-bond colour: backbone → black, others → hierarchical colour
-            anim_bond_colors = {
-                (pi, pj): hier_bond_colors.get((pi, pj), 'black')
-                for (pi, pj) in backbone_dict
-            }
+            # Per-bond colour: all Hilbert-adjacent pairs get their level colour
+            anim_bond_colors = dict(hier_bond_colors)
 
         # Animation window: lattice + energy + all 5 coupling matrices
         make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,
                    frames, args.filehead, args.e1,
                    custom_bonds=backbone_dict, coupling_matrices=polymer_matrices,
-                   bond_colors=anim_bond_colors)
+                   bond_colors=anim_bond_colors,
+                   backbone_pairs=backbone_pair_set)
 
         if args.boltzmann:
             # Show all canonical conformations ranked by physical energy

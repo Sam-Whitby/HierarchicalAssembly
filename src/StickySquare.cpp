@@ -81,6 +81,17 @@ Interactions::Interactions(int np, int n0,
     weakDsq5 = wDsq5;
 }
 
+Interactions::Interactions(int np, int n0,
+        vector<Triple>& triplesNorth, vector<Triple>& triplesEast,
+        vector<vector<double>>& wD1, vector<vector<double>>& wDsq2,
+        vector<vector<double>>& wD2,  vector<vector<double>>& wDsq5,
+        double springK, vector<vector<int>>& bbPartners)
+    : Interactions(np, n0, triplesNorth, triplesEast, wD1, wDsq2, wD2, wDsq5)
+{
+    backboneSpringK  = springK;
+    backbonePartners = bbPartners;
+}
+
 
 // Print out list of interactions; for debugging
 void Interactions::printInteractions(vector<Neighbours>& interactions) {
@@ -141,6 +152,27 @@ double StickySquare::computePairEnergy(unsigned int particle1, const double* pos
     // reject if particles overlap, or are beyond sqrt(5) range
     // TOL, INF defined in Model.cpp
     if (normSqd < 1.-TOL) return INF;   // particles overlap
+
+    // Backbone spring: applies at any distance (replaces wDsq2/wD2/wDsq5 for backbone pairs)
+    if (interactions.backboneSpringK > 0.0 && !interactions.backbonePartners.empty()) {
+        int n0 = interactions.n0_size > 0 ? interactions.n0_size : 1;
+        int id1_ = (int)particle1 % n0;
+        int id2_ = (int)particle2 % n0;
+        bool isBackbone = false;
+        for (int bp : interactions.backbonePartners[id1_]) {
+            if (bp == id2_) { isBackbone = true; break; }
+        }
+        if (isBackbone) {
+            double d = sqrt(normSqd);
+            double physE = interactions.backboneSpringK * (d - 1.0) * (d - 1.0);
+            // At d=1, also apply level coupling from wD1 (attractive term)
+            if (normSqd < 1.0 + TOL && !interactions.weakD1.empty()) {
+                physE -= interactions.weakD1[id1_][id2_];  // coupling → physical: -coupling
+            }
+            return physE;
+        }
+    }
+
     if (normSqd > 5.+TOL) return 0;     // beyond sqrt(5) range
 
     // Only works for 2d squares
@@ -236,11 +268,56 @@ double StickySquare::computePairEnergyNative(unsigned int particle1, const doubl
 
 
 
+// Override computeInteractions to always include backbone spring partners
+unsigned int StickySquare::computeInteractions(unsigned int particle,
+    const double* position, const double* orientation, unsigned int* nbrs)
+{
+    // Standard cell-list neighbors
+    unsigned int n = Model::computeInteractions(particle, position, orientation, nbrs);
+
+    // Add backbone partners not already found (regardless of current distance)
+    if (interactions.backboneSpringK > 0.0 && !interactions.backbonePartners.empty()) {
+        int n0 = interactions.n0_size > 0 ? interactions.n0_size : 1;
+        int id1 = (int)particle % n0;
+        int copyBase = (int)(particle / n0) * n0;
+        for (int partner_id : interactions.backbonePartners[id1]) {
+            unsigned int partner = (unsigned int)(copyBase + partner_id);
+            bool found = false;
+            for (unsigned int k = 0; k < n; k++) {
+                if (nbrs[k] == partner) { found = true; break; }
+            }
+            if (!found) {
+                if (n == maxInteractions) {
+                    std::cerr << "[ERROR] StickySquare::computeInteractions: maxInteractions exceeded!\n";
+                    exit(EXIT_FAILURE);
+                }
+                nbrs[n++] = partner;
+            }
+        }
+    }
+    return n;
+}
+
+// Override computeEnergy to use our computeInteractions (includes backbone partners at any range)
+double StickySquare::computeEnergy(unsigned int particle, const double* position, const double* orientation)
+{
+    double energy = 0;
+    unsigned int nbrs[maxInteractions];
+    unsigned int n = computeInteractions(particle, position, orientation, nbrs);
+    for (unsigned int k = 0; k < n; k++) {
+        unsigned int nbr = nbrs[k];
+        energy += computePairEnergy(particle, position, orientation,
+                    nbr, &particles[nbr].position[0], &particles[nbr].orientation[0]);
+    }
+    return energy;
+}
+
+
 // Calculate the histogram of fragment sizes
-//   Input: 
+//   Input:
 //         int maxFragmentSize       = maximum size of a fragment
 //         vector<int> fragmentHist  = histogram of fragment sizes (1:maxFragmentSize)
-//   Output: 
+//   Output:
 //         int = # of fragments
 //
 int StickySquare::computeFragmentHistogram(int maxFragmentSize, vector<int>& fragmentHist) {
