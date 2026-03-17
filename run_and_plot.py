@@ -1404,6 +1404,9 @@ def plot_weak_coupling_matrices(matrices, n0):
     plt.show()
 
 
+_MAX_LIVE_DISPLAY = 50
+
+
 def plot_all_states(n0, coupling_matrices=None, live_states=None,
                     backbone_pairs=None, spring_k=None):
     """Plot canonically distinct conformations of the n0-bead polymer chain.
@@ -1413,15 +1416,20 @@ def plot_all_states(n0, coupling_matrices=None, live_states=None,
 
     live_states: if provided (list of (key, example_rel, deg) from boltzmann_validation),
         these simulation-observed states are shown instead of the DFS-enumerated set.
-        Allows states with stretched backbone bonds (d > sqrt(2)) to appear.
+        At most _MAX_LIVE_DISPLAY states are drawn; the total count is shown in the title.
     backbone_pairs / spring_k: passed to compute_conformation_energy so that backbone
         spring energy is computed exactly for each observed distance.
     """
     if live_states is not None:
-        states = live_states
+        total_live = len(live_states)
+        states = live_states[:_MAX_LIVE_DISPLAY]
         n_states = len(states)
-        source_label = f"{n_states} live-observed states"
-        print(f"  Plotting {n_states} simulation-observed canonical conformations.")
+        if total_live > _MAX_LIVE_DISPLAY:
+            source_label = (f"{total_live} total live-observed states"
+                            f"  (showing first {_MAX_LIVE_DISPLAY})")
+        else:
+            source_label = f"{total_live} live-observed states"
+        print(f"  Plotting {n_states} of {total_live} simulation-observed canonical conformations.")
     else:
         print("Enumerating canonical states...")
         states = enumerate_canonical_states(n0)
@@ -1620,28 +1628,29 @@ def main():
                    backbone_pairs=backbone_pair_set)
 
         if args.boltzmann:
-            # --- Standard validation: DFS-enumerated states, matrix energies ---
-            plot_all_states(n0, coupling_matrices=polymer_matrices)
-            print("Running Boltzmann validation (pre-enumerated states)...")
-            step_indices, correlations, obs_freq, boltz_freq, state_energies, _ = \
-                boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps)
-            plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq,
-                                      state_energies, n0)
-
-            # --- Live validation: states built from simulation observations ---
-            # Uses exact spring energy at any backbone distance; required for --spring-k.
             if args.enumerate_live:
+                # Live validation: build state set from simulation observations.
+                # Uses exact spring energy at any backbone bond distance.
+                # Required for --spring-k where bonds can stretch beyond d=sqrt(2).
                 live_bb_pairs = backbone_pair_set if args.spring_k is not None else None
-                live_spring_k = args.spring_k  # None if not set (falls back to matrix values)
+                live_spring_k = args.spring_k
                 print("Running Boltzmann validation (live-enumerated states)...")
                 (si_live, corr_live, obs_live, boltz_live, e_live, live_states) = \
                     boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps,
                                          backbone_pairs=live_bb_pairs, spring_k=live_spring_k)
-                plot_boltzmann_validation(si_live, corr_live, obs_live, boltz_live, e_live,
-                                          n0, title_suffix=" [live-enumerated]")
+                plot_boltzmann_validation(si_live, corr_live, obs_live, boltz_live, e_live, n0)
                 plot_all_states(n0, coupling_matrices=polymer_matrices,
                                 live_states=live_states,
                                 backbone_pairs=live_bb_pairs, spring_k=live_spring_k)
+            else:
+                # Pre-enumerated validation: DFS-enumerated states, energies from matrices.
+                # Correct for hard-confinement backbone; for spring backbone use --enumerate-live.
+                plot_all_states(n0, coupling_matrices=polymer_matrices)
+                print("Running Boltzmann validation (pre-enumerated states)...")
+                step_indices, correlations, obs_freq, boltz_freq, state_energies, _ = \
+                    boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps)
+                plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq,
+                                          state_energies, n0)
 
     else:
         # Resolve bond file / custom mode
