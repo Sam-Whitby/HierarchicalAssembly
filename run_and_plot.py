@@ -130,6 +130,10 @@ def parse_args():
     p.add_argument("--prob-translate", type=float, default=1.0,
                    help="Fraction of VMMC moves that are translations (default 1.0); "
                         "remainder are cluster rotations. Set < 1 to enable rotational moves.")
+    p.add_argument("--patches", action="store_true",
+                   help="Enable directional patch mode: d=1 weak bonds only form when "
+                        "the active patch of each particle faces the other. Requires "
+                        "--prob-translate < 1 for rotational moves so patches can realign.")
 
     # Script behaviour
     p.add_argument("--no-run", action="store_true",
@@ -708,7 +712,7 @@ def write_conf_file(path, n0, box_length):
     print(f"Initial config written to {path}  ({n0} particles, {curve_name} space-filling curve)")
 
 
-def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None, prob_translate=1.0):
+def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None, prob_translate=1.0, patches=False):
     cmd = [exe, input_file, bond_file]
     if conf_file:
         cmd.append(conf_file)
@@ -716,6 +720,8 @@ def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None, prob_
         cmd.append(str(seed))
     if prob_translate != 1.0:
         cmd += ['--prob-translate', str(prob_translate)]
+    if patches:
+        cmd += ['--patches']
     print("Running:", " ".join(cmd))
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -1599,10 +1605,10 @@ def main():
 
                 print(f"\n--- Main simulation phase ({args.nsteps} steps) ---")
                 run_polymer_sim(exe_polymer, input_file, bond_file, denature_conf, args.sim_seed,
-                                args.prob_translate)
+                                args.prob_translate, patches=args.patches)
             else:
                 run_polymer_sim(exe_polymer, input_file, bond_file, conf_file, args.sim_seed,
-                                args.prob_translate)
+                                args.prob_translate, patches=args.patches)
 
         print("Parsing output files...")
         steps, energy, fragment_hist = parse_stats(statsfile)

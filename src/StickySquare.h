@@ -18,6 +18,7 @@ MUST SET ifLattice = true, for Initialise class & VMMC class.
 
 #include "Model.h"
 #include "Box.h"
+#include <array>
 
 using namespace std;
 
@@ -53,6 +54,18 @@ public:
     // Backbone spring (unlimited range)
     double backboneSpringK = 0.0;            // spring stiffness k; 0 = disabled
     vector<vector<int>> backbonePartners;    // backbonePartners[id] = list of backbone partner IDs
+
+    // Directional patches (optional, --patches mode)
+    // patchSlots[id][slot] = true if particle 'id' has an active patch at that slot.
+    // Slot convention (in particle's LOCAL frame, relative to its orientation vector):
+    //   0 = local-east  (facing the orientation direction)
+    //   1 = local-north (90° CCW from orientation)
+    //   2 = local-west  (opposite to orientation)
+    //   3 = local-south (90° CW from orientation)
+    // A d=1 weak bond forms only if both particles have their active patch facing each other.
+    // Backbone spring bonds are not subject to the patch constraint.
+    bool patchesEnabled = false;
+    vector<array<bool,4>> patchSlots;  // size n0, one entry per particle identity
     Interactions(int,vector<Triple>&,vector<Triple>&);   // constructor: nParticples, TriplesNorth, TriplesEast
     Interactions(int,vector<Triple>&,vector<Triple>&,double);   // constructor: nParticples, TriplesNorth, TriplesEast, crosstalk
     Interactions(int nParticles, int n0,

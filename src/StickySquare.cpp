@@ -111,6 +111,26 @@ void Interactions::printInteractions(vector<Neighbours>& interactions) {
 }
 
 
+// Given a particle's orientation vector (ox, oy) and an integer cardinal
+// direction (dx, dy) in the world frame, return which local patch slot
+// of the particle faces that direction.
+//   Slot 0: local-east  (same as orientation vector)
+//   Slot 1: local-north (90° CCW from orientation)
+//   Slot 2: local-west  (opposite to orientation)
+//   Slot 3: local-south (90° CW from orientation)
+// Returns -1 if (dx,dy) is not a valid cardinal direction.
+static int getPatchSlot(const double* ori, int dx, int dy) {
+    // Rotate world (dx,dy) into local frame: R^{-T} = R(-theta)
+    // local_x = dx*ox + dy*oy,  local_y = -dx*oy + dy*ox
+    int lx = (int)round((double)dx * ori[0] + (double)dy * ori[1]);
+    int ly = (int)round(-(double)dx * ori[1] + (double)dy * ori[0]);
+    if (lx ==  1 && ly ==  0) return 0;
+    if (lx ==  0 && ly ==  1) return 1;
+    if (lx == -1 && ly ==  0) return 2;
+    if (lx ==  0 && ly == -1) return 3;
+    return -1;  // not a cardinal direction
+}
+
 // Constructor
 StickySquare::StickySquare(
     Box& box_,
@@ -194,8 +214,21 @@ double StickySquare::computePairEnergy(unsigned int particle1, const double* pos
                 backbone = interactions.north[particle1].getVal(particle2);
             if (backbone != Neighbours::cNone) energy += backbone;
             else energy += interactions.crosstalk;
-            // Weak coupling (always added)
-            if (!interactions.weakD1.empty()) energy += interactions.weakD1[id1][id2];
+            // Weak d=1 coupling, gated by directional patches when enabled.
+            if (!interactions.weakD1.empty()) {
+                bool patchOk = true;
+                if (interactions.patchesEnabled && !interactions.patchSlots.empty()) {
+                    // sep = pos1 - pos2, so direction from 1→2 is -sep, from 2→1 is +sep.
+                    int dx12 = (int)round(-sep[0]);
+                    int dy12 = (int)round(-sep[1]);
+                    int s1 = getPatchSlot(orientation1,  dx12,  dy12);
+                    int s2 = getPatchSlot(orientation2, -dx12, -dy12);
+                    patchOk = (s1 >= 0 && s2 >= 0 &&
+                               interactions.patchSlots[id1][s1] &&
+                               interactions.patchSlots[id2][s2]);
+                }
+                if (patchOk) energy += interactions.weakD1[id1][id2];
+            }
 
         } else if (normSqd < 2.+TOL) {
             // Diagonal neighbour (distance sqrt(2)): direction-agnostic backbone lookup
@@ -254,6 +287,26 @@ double StickySquare::computePairEnergyNative(unsigned int particle1, const doubl
                 energy = interactions.north[particle2].getVal(particle1);
             if( mabs(sep[1]+1.) < TOL && mabs(sep[0]) < TOL )   // (0,-1) = (1-->2 North)
                 energy = interactions.north[particle1].getVal(particle2);
+            // Patch gate on weakD1 (only active in patch mode; backbone excluded)
+            if (energy == Neighbours::cNone && !interactions.weakD1.empty()) {
+                double w = interactions.weakD1[
+                    (int)particle1 % (interactions.n0_size > 0 ? interactions.n0_size : 1)][
+                    (int)particle2 % (interactions.n0_size > 0 ? interactions.n0_size : 1)];
+                if (interactions.patchesEnabled && !interactions.patchSlots.empty()) {
+                    int id1n = (int)particle1 % (interactions.n0_size > 0 ? interactions.n0_size : 1);
+                    int id2n = (int)particle2 % (interactions.n0_size > 0 ? interactions.n0_size : 1);
+                    int dx12 = (int)round(-sep[0]);
+                    int dy12 = (int)round(-sep[1]);
+                    int s1 = getPatchSlot(orientation1,  dx12,  dy12);
+                    int s2 = getPatchSlot(orientation2, -dx12, -dy12);
+                    if (s1 >= 0 && s2 >= 0 &&
+                        interactions.patchSlots[id1n][s1] &&
+                        interactions.patchSlots[id2n][s2])
+                        energy = w;
+                } else {
+                    energy = w;
+                }
+            }
         } else {
             // Diagonal neighbour (distance sqrt(2)): direction-agnostic lookup
             energy = interactions.east[particle1].getVal(particle2);

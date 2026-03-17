@@ -40,6 +40,7 @@ int main(int argc, char** argv)
     // Parse optional named flags first, then positional args.
     int nLatticeNeighbours = 4;
     double probTranslate   = 1.0;
+    bool usePatch          = false;
     std::vector<string> positional;
     for (int i = 1; i < argc; ++i) {
         string a = argv[i];
@@ -55,18 +56,21 @@ int main(int argc, char** argv)
                 cerr << "[ERROR] --prob-translate must be in [0, 1]\n";
                 return 1;
             }
+        } else if (a == "--patches") {
+            usePatch = true;
         } else {
             positional.push_back(a);
         }
     }
     if (positional.size() < 2) {
-        cout << "Usage: ./run_polymer <inputfile> <bondfile> [conffile] [seed] [--neighbours 4|8] [--prob-translate P]\n"
+        cout << "Usage: ./run_polymer <inputfile> <bondfile> [conffile] [seed] [--neighbours 4|8] [--prob-translate P] [--patches]\n"
              << "  inputfile        : same format as run_hier\n"
              << "  bondfile         : extended bond file with BACKBONE and WEAK_D* sections\n"
              << "  conffile         : (optional) initial configuration file (x y per line)\n"
              << "  seed             : (optional) integer RNG seed\n"
              << "  --neighbours 4|8 : lattice directions for VMMC (default 4)\n"
-             << "  --prob-translate : fraction of moves that are translations (default 1.0)\n";
+             << "  --prob-translate : fraction of moves that are translations (default 1.0)\n"
+             << "  --patches        : enable directional patches; bonds only form when patch faces are aligned\n";
         return 1;
     }
     string inputfile = positional[0];
@@ -242,6 +246,45 @@ int main(int argc, char** argv)
 
     Interactions interactions(nParticles, n0, north, east, wD1, wDsq2, wD2, wDsq5, springK, bbPartners);
 
+    /* ----------  Build directional patches (--patches mode)  ---------- */
+    // Each particle identity i has 4 patch slots in its LOCAL frame:
+    //   slot 0 = local-east (faces same dir as orientation vector)
+    //   slot 1 = local-north (90° CCW from orientation)
+    //   slot 2 = local-west  (opposite orientation)
+    //   slot 3 = local-south (90° CW from orientation)
+    // A slot is activated when wD1[i][j] != 0 and j is at grid-distance 1 from i.
+    // All particles start with orientation (1,0), so local frame == world frame at t=0:
+    //   direction (+1, 0) → slot 0,  (0,+1) → slot 1,  (-1,0) → slot 2,  (0,-1) → slot 3.
+    if (usePatch) {
+        interactions.patchesEnabled = true;
+        interactions.patchSlots.assign(n0, {false, false, false, false});
+        for (int i = 0; i < n0; i++) {
+            int col_i = i % l0, row_i = i / l0;
+            for (int j = 0; j < n0; j++) {
+                if (wD1[i][j] == 0.0) continue;
+                int col_j = j % l0, row_j = j / l0;
+                int dx = col_j - col_i, dy = row_j - row_i;
+                // Only grid-adjacent (Manhattan distance 1) pairs get patches.
+                if (abs(dx) + abs(dy) != 1) continue;
+                // Backbone pairs bypass the patch check anyway; exclude their
+                // directions so backbone-direction slots can't accidentally gate
+                // non-backbone bonds after a rotation.
+                bool isBackbone = false;
+                for (int bp : bbPartners[i]) {
+                    if (bp == j) { isBackbone = true; break; }
+                }
+                if (isBackbone) continue;
+                int slot = (dx == 1) ? 0 : (dy == 1) ? 1 : (dx == -1) ? 2 : 3;
+                interactions.patchSlots[i][slot] = true;
+            }
+        }
+        int total_patches = 0;
+        for (int i = 0; i < n0; i++)
+            for (int s = 0; s < 4; s++)
+                if (interactions.patchSlots[i][s]) total_patches++;
+        cout << "Patch mode enabled: " << total_patches << " patch slots activated across " << n0 << " particle identities." << endl;
+    }
+
     /* ----------  Initialise data structures & classes  ---------- */
     std::vector<Particle> particles(nParticles);
     bool isIsotropic[nParticles];
@@ -274,7 +317,15 @@ int main(int argc, char** argv)
             coordinates[dimension*i + j] = particles[i].position[j];
             orientations[dimension*i + j] = particles[i].orientation[j];
         }
-        isIsotropic[i] = true;
+        // Patch mode: particles are anisotropic (orientations tracked by VMMC).
+        // All start facing (1,0) so their local patch frame matches the Hilbert grid layout.
+        if (usePatch) {
+            orientations[dimension*i + 0] = 1.0;
+            orientations[dimension*i + 1] = 0.0;
+            particles[i].orientation[0]   = 1.0;
+            particles[i].orientation[1]   = 0.0;
+        }
+        isIsotropic[i] = !usePatch;
     }
 
     /* ----------  Initialise VMMC  ---------- */
