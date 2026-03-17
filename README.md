@@ -41,6 +41,17 @@ python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
 # Non-specific bonding: any same-level pair can bond, not just Hilbert neighbours
 python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
   --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --spring-k 50 --unspecific --sim-seed 42
+
+# Enable rotational moves (50% rotations, 50% translations)
+python run_and_plot.py --polymer 4 --L 12 --nsteps 100000 --nsweep 1 \
+  --hier-red 0 --spring-k 1 --sim-seed 42 --prob-translate 0.5
+
+# Boltzmann validation with rotational moves (requires --enumerate-live for spring backbone)
+python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
+  --hier-red 0 --spring-k 1 --sim-seed 42 --prob-translate 0.5 --boltzmann --enumerate-live
+
+# Scan RED bond energy from 0..20 with multiple repeats and time curves (edit scan_config.ini first)
+python scan_assembly.py scan_config.ini
 ```
 
 Press **spacebar** to pause/resume the animation.
@@ -110,6 +121,7 @@ In non-specific mode (`--unspecific`): every pair (i,j) can attract at **any** p
 **Two-layer bond drawing:**
 1. **Coloured layer** (wide, semi-transparent): red/green/blue by hierarchical level; backbone pairs also receive their level colour.
 2. **Black backbone layer** (thin, on top): drawn for every backbone pair at any physical distance, including stretched bonds across periodic boundaries.
+3. **Green dashed lines**: when yield > 0 but no fully assembled groups exist yet, dashed lines connect particle pairs that have formed native RED contacts (i.e. the bonds that contribute to the yield calculation). Useful for diagnosing partial assembly.
 
 **Coupling matrix panels** show static physical energies: red = repulsive, blue = attractive. For spring backbone, backbone pairs show spring penalties k·(d−1)² in the Dsq2/D2/Dsq5 panels; D0 shows a uniform repulsive marker for all pairs (representing universal hard-sphere exclusion).
 
@@ -149,6 +161,43 @@ Both figures show:
 
 ---
 
+## Parameter scan (`scan_assembly.py`)
+
+Sweeps RED bond energy over a range of values and time points, running multiple independent repeats per condition, and produces a yield-vs-energy plot showing the kinetic/thermodynamic crossover.
+
+```bash
+python scan_assembly.py scan_config.ini
+```
+
+Configure `scan_config.ini`:
+
+```ini
+[simulation]
+polymer        = 64          # chain length (sqrt must be power of 2)
+L              = 40          # box side length
+nsweep         = 1           # sweeps per output step
+hier_green     = 0.0         # GREEN and BLUE couplings (set to 0 to isolate RED level)
+hier_blue      = 0.0
+spring_k       = 0.05        # spring backbone stiffness (or None for hard-wall)
+e1             = 8.0         # hard-wall backbone energy (used during denaturation phase)
+sim_seed       = 42          # base RNG seed (repeat r uses seed + r)
+unspecific     = true        # non-specific bonding
+n_neighbours   = 8           # VMMC lattice directions: 4 or 8
+denature_steps = 1000        # pre-equilibration steps with weak bonds zeroed
+
+[scan]
+hier_red_values = 0,1,2,3,4,5,6,7,8,9,10,20   # RED energies to test
+nsteps_curves   = 1,10,100,1000                # time points for yield measurement
+
+[output]
+output_dir = scan_results    # directory for per-condition subdirs + summary CSV + plot
+n_repeats  = 5               # independent repeats per condition
+```
+
+**Output:** `scan_results/yields.csv` (per-condition yields) and a yield-vs-energy PNG with one curve per time point and error bars across repeats.
+
+---
+
 ## Python wrapper flags
 
 ### All modes
@@ -183,6 +232,8 @@ Both figures show:
 | `--unspecific` | Non-specific bonding: all same-level pairs bond at any d=1 or d=√2, not just Hilbert neighbours. Only meaningful with `--hier-*`. |
 | `--denature N` | Pre-equilibration: N steps with weak bonds zeroed before main run |
 | `--sim-seed N` | RNG seed for C++ simulation |
+| `--prob-translate P` | Fraction of VMMC moves that are translations (default 1.0). Set < 1 to enable rotational moves (e.g. 0.5 for 50/50). |
+| `--n-neighbours N` | Lattice directions for VMMC translation moves: 4 = cardinal only, 8 = cardinal + diagonal (default 4). |
 | `--boltzmann` | Enable Boltzmann validation (see below) |
 | `--enumerate-live` | Use live-observed state enumeration for Boltzmann validation (required for `--spring-k`). Without this flag, uses pre-enumerated DFS states. |
 
@@ -255,7 +306,12 @@ Each particle is a unit square on a 2D lattice. Pair interactions are computed u
 | d = 2    | wD2 weak coupling only |
 | d = √5   | wDsq5 weak coupling only |
 
-Dynamics: **Virtual Move Monte Carlo** (cluster moves), lattice-restricted to cardinal steps of size 1.
+Dynamics: **Virtual Move Monte Carlo** (cluster moves). Two move types:
+
+- **Translation**: cluster moves by one lattice step in a cardinal (or optionally diagonal) direction.
+- **Rotation**: cluster rotates rigidly about the seed particle by 90°, 180°, or 270°. Only multiples of 90° keep all particles on integer sites. A random neighbor is always force-included so that the rotation of a single isotropic particle (which has no effect) is never proposed. The VMMC Stokes acceptance factor for rotational drag scales as the cube of the cluster's RMS distance from the rotation center.
+
+The fraction of moves that are translations vs. rotations is set by `--prob-translate` (default 1.0 = translations only).
 
 ---
 
@@ -268,6 +324,8 @@ Dynamics: **Virtual Move Monte Carlo** (cluster moves), lattice-restricted to ca
 | `run_custom.cpp` | Custom bond driver |
 | `run_polymer.cpp` | Polymer driver |
 | `run_and_plot.py` | Python wrapper: runner, animation, Boltzmann validation |
+| `scan_assembly.py` | Parameter scan over RED bond energies and time points, producing yield curves |
+| `scan_config.ini` | Configuration file for `scan_assembly.py` |
 | `src/` | Library source and headers |
 | `input_hier.txt` | Default input file |
 | `old/` | Deprecated files |

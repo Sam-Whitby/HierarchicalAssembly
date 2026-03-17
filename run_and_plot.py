@@ -127,6 +127,9 @@ def parse_args():
                    help="Number of equilibration steps with all weak bonds zeroed (backbone "
                         "confinement only). Runs before the main simulation; the final "
                         "configuration is used as the starting point for the main run.")
+    p.add_argument("--prob-translate", type=float, default=1.0,
+                   help="Fraction of VMMC moves that are translations (default 1.0); "
+                        "remainder are cluster rotations. Set < 1 to enable rotational moves.")
 
     # Script behaviour
     p.add_argument("--no-run", action="store_true",
@@ -705,12 +708,14 @@ def write_conf_file(path, n0, box_length):
     print(f"Initial config written to {path}  ({n0} particles, {curve_name} space-filling curve)")
 
 
-def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None):
+def run_polymer_sim(exe, input_file, bond_file, conf_file=None, seed=None, prob_translate=1.0):
     cmd = [exe, input_file, bond_file]
     if conf_file:
         cmd.append(conf_file)
     if seed is not None:
         cmd.append(str(seed))
+    if prob_translate != 1.0:
+        cmd += ['--prob-translate', str(prob_translate)]
     print("Running:", " ".join(cmd))
     result = subprocess.run(cmd)
     if result.returncode != 0:
@@ -1587,15 +1592,17 @@ def main():
 
                 print(f"\n--- Denaturation phase ({args.denature} steps, weak bonds off) ---")
                 run_polymer_sim(exe_polymer, denature_input, denature_bond_file,
-                                conf_file, args.sim_seed)
+                                conf_file, args.sim_seed, args.prob_translate)
 
                 # Extract final config from denaturation run for use as main-phase seed
                 write_conf_from_last_frame(denature_traj, denature_conf)
 
                 print(f"\n--- Main simulation phase ({args.nsteps} steps) ---")
-                run_polymer_sim(exe_polymer, input_file, bond_file, denature_conf, args.sim_seed)
+                run_polymer_sim(exe_polymer, input_file, bond_file, denature_conf, args.sim_seed,
+                                args.prob_translate)
             else:
-                run_polymer_sim(exe_polymer, input_file, bond_file, conf_file, args.sim_seed)
+                run_polymer_sim(exe_polymer, input_file, bond_file, conf_file, args.sim_seed,
+                                args.prob_translate)
 
         print("Parsing output files...")
         steps, energy, fragment_hist = parse_stats(statsfile)
@@ -1638,6 +1645,7 @@ def main():
                 (si_live, corr_live, obs_live, boltz_live, e_live, live_states) = \
                     boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps,
                                          backbone_pairs=live_bb_pairs, spring_k=live_spring_k)
+                print(f"  Boltzmann Pearson r (final) = {corr_live[-1]:.4f}")
                 plot_boltzmann_validation(si_live, corr_live, obs_live, boltz_live, e_live, n0)
                 plot_all_states(n0, coupling_matrices=polymer_matrices,
                                 live_states=live_states,

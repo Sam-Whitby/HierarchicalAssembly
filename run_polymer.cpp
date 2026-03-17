@@ -37,21 +37,44 @@ static vector<vector<double>> readMatrix(ifstream& f, int n0, const string& endT
 
 int main(int argc, char** argv)
 {
-    if(argc < 3) {
-        cout << "Usage: ./run_polymer <inputfile> <bondfile> [conffile] [seed]\n"
-             << "  inputfile : same format as run_hier\n"
-             << "  bondfile  : extended bond file with BACKBONE and WEAK_D* sections\n"
-             << "  conffile  : (optional) initial configuration file (x y per line)\n"
-             << "  seed      : (optional) integer RNG seed\n";
+    // Parse optional named flags first, then positional args.
+    int nLatticeNeighbours = 4;
+    double probTranslate   = 1.0;
+    std::vector<string> positional;
+    for (int i = 1; i < argc; ++i) {
+        string a = argv[i];
+        if (a == "--neighbours" && i + 1 < argc) {
+            nLatticeNeighbours = atoi(argv[++i]);
+            if (nLatticeNeighbours != 4 && nLatticeNeighbours != 8) {
+                cerr << "[ERROR] --neighbours must be 4 or 8\n";
+                return 1;
+            }
+        } else if (a == "--prob-translate" && i + 1 < argc) {
+            probTranslate = atof(argv[++i]);
+            if (probTranslate < 0.0 || probTranslate > 1.0) {
+                cerr << "[ERROR] --prob-translate must be in [0, 1]\n";
+                return 1;
+            }
+        } else {
+            positional.push_back(a);
+        }
+    }
+    if (positional.size() < 2) {
+        cout << "Usage: ./run_polymer <inputfile> <bondfile> [conffile] [seed] [--neighbours 4|8] [--prob-translate P]\n"
+             << "  inputfile        : same format as run_hier\n"
+             << "  bondfile         : extended bond file with BACKBONE and WEAK_D* sections\n"
+             << "  conffile         : (optional) initial configuration file (x y per line)\n"
+             << "  seed             : (optional) integer RNG seed\n"
+             << "  --neighbours 4|8 : lattice directions for VMMC (default 4)\n"
+             << "  --prob-translate : fraction of moves that are translations (default 1.0)\n";
         return 1;
     }
-
-    string inputfile = argv[1];
-    string bondfile  = argv[2];
-    string conffile  = (argc >= 4) ? argv[3] : "";
+    string inputfile = positional[0];
+    string bondfile  = positional[1];
+    string conffile  = (positional.size() >= 3) ? positional[2] : "";
     unsigned int rng_seed = 0;
     bool use_seed = false;
-    if(argc >= 5) { use_seed = true; rng_seed = (unsigned int)atoi(argv[4]); }
+    if (positional.size() >= 4) { use_seed = true; rng_seed = (unsigned int)atoi(positional[3].c_str()); }
 
     cout << "inputfile=" << inputfile << " bondfile=" << bondfile;
     if(!conffile.empty()) cout << " conffile=" << conffile;
@@ -267,14 +290,14 @@ int main(int argc, char** argv)
         std::bind(&StickySquare::applyPostMoveUpdates, StickySquare, _1, _2, _3);
 
     double maxTrialTranslation = 1.5;
-    double maxTrialRotation    = 0.0;
-    double probTranslate       = 1.0;
+    double maxTrialRotation    = (probTranslate < 1.0) ? M_PI : 0.0;
     double referenceRadius     = 0.5;
     bool   isRepulsive         = false;
 
     vmmc::VMMC vmmc(nParticles, dimension, coordinates, orientations,
         maxTrialTranslation, maxTrialRotation, probTranslate, referenceRadius,
-        maxInteractions, &boxSize[0], isIsotropic, isRepulsive, callbacks, isLattice);
+        maxInteractions, &boxSize[0], isIsotropic, isRepulsive, callbacks, isLattice,
+        nLatticeNeighbours);
 
     /* ----------  Create output files  ---------- */
     InputOutput io;

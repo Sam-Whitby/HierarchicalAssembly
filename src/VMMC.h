@@ -267,7 +267,7 @@ namespace vmmc
 #else
         VMMC(unsigned int, unsigned int, double*, double, double, double, double, unsigned int, double*, bool,
 #endif
-            const CallbackFunctions&, bool isLattice_ = false);
+            const CallbackFunctions&, bool isLattice_ = false, int nLatticeNeighbours_ = 4);
 
         //! Overloaded ++ operator. Perform a single VMMC step.
         void operator ++ (const int);
@@ -356,6 +356,7 @@ namespace vmmc
 
         // MHC
         bool isLattice;
+        int nLatticeNeighbours;         //!< Number of lattice neighbours to consider (4 or 8).
         // end MHC
 
         CallbackFunctions callbacks;                //!< Callback functions.

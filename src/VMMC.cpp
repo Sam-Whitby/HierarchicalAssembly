@@ -55,8 +55,9 @@ namespace vmmc
         bool* isIsotropic_,
 #endif
         bool isRepusive_,
-        const CallbackFunctions& callbacks_, 
-        bool isLattice_):             // MHC
+        const CallbackFunctions& callbacks_,
+        bool isLattice_,              // MHC
+        int nLatticeNeighbours_):     // MHC
 
         nAttempts(0),
         nAccepts(0),
@@ -70,7 +71,8 @@ namespace vmmc
         maxInteractions(maxInteractions_),
         isRepusive(isRepusive_),
         callbacks(callbacks_),
-        isLattice(isLattice_)       // MHC
+        isLattice(isLattice_),           // MHC
+        nLatticeNeighbours(nLatticeNeighbours_)  // MHC
     {
         // Check number of particles.
         if ((nParticles == 0) ||
@@ -372,15 +374,13 @@ namespace vmmc
 	            moveParams.trialVector[i] /= norm;
    		}
 
-   		// MHC
+   		// MHC: pick lattice direction (4 cardinal or 4 cardinal + 4 diagonal)
         if(isLattice == true) {
-        	for (unsigned int i=0;i<dimension;i++)
-	            moveParams.trialVector[i] = 0;
-        	int i = floor(rng()*dimension);  // which direction / dimension to step in
-        	if(rng() < 0.5) 
-        		moveParams.trialVector[i] = -1;
-        	else
-        		moveParams.trialVector[i] = +1;
+            static const int dx8[8] = { 1, -1,  0,  0,  1,  1, -1, -1 };
+            static const int dy8[8] = { 0,  0,  1, -1,  1, -1,  1, -1 };
+            int dir = (int)floor(rng() * nLatticeNeighbours);
+            moveParams.trialVector[0] = dx8[dir];
+            moveParams.trialVector[1] = dy8[dir];
         }
    		// end MHC
 
@@ -413,7 +413,15 @@ namespace vmmc
         {
             // Rotation.
             moveParams.isRotation = true;
-            moveParams.stepSize = maxTrialRotation*(2.0*rng()-1.0);
+            if (isLattice) {
+                // MHC: on a square lattice only 90° multiples keep particles on lattice sites.
+                // Pick uniformly from {π/2, π, 3π/2} (= {+90°, 180°, -90°}).
+                // Each choice has a valid reverse with equal probability → detailed balance holds.
+                static const double latticeAngles[3] = { M_PI/2.0, M_PI, 3.0*M_PI/2.0 };
+                moveParams.stepSize = latticeAngles[(int)floor(rng() * 3)];
+            } else {
+                moveParams.stepSize = maxTrialRotation*(2.0*rng()-1.0);
+            }
 
             // Check whether seed particle is isotropic.
 #ifndef ISOTROPIC
@@ -707,15 +715,28 @@ namespace vmmc
                     delta[j] = particles[moveList[i]].clusterPosition[j] - particles[moveParams.seed].preMovePosition[j];
             }
 
-            double a1 = delta[0]*moveParams.trialVector[1] - delta[1]*moveParams.trialVector[0];
-            hydroRadius += a1*a1;  // MHC: was hydroRadius = a1*a1
-
-            if (is3D)
+            // MHC: For 2D rotations the rotation axis is the z-axis, so the
+            // perpendicular distance from the rotation center is simply
+            // sqrt(delta_x^2 + delta_y^2). Using the cross product with the
+            // randomly-chosen trialVector (as for translations) gives an
+            // asymmetric Stokes factor between forward/reverse moves, breaking
+            // detailed balance. Use the correct formula here.
+            if (!is3D && moveParams.isRotation)
             {
-                double a2 = delta[1]*moveParams.trialVector[2] - delta[2]*moveParams.trialVector[1];
-                double a3 = delta[2]*moveParams.trialVector[0] - delta[0]*moveParams.trialVector[2];
+                hydroRadius += delta[0]*delta[0] + delta[1]*delta[1];
+            }
+            else
+            {
+                double a1 = delta[0]*moveParams.trialVector[1] - delta[1]*moveParams.trialVector[0];
+                hydroRadius += a1*a1;
 
-                hydroRadius += a2*a2 + a3*a3;
+                if (is3D)
+                {
+                    double a2 = delta[1]*moveParams.trialVector[2] - delta[2]*moveParams.trialVector[1];
+                    double a3 = delta[2]*moveParams.trialVector[0] - delta[0]*moveParams.trialVector[2];
+
+                    hydroRadius += a2*a2 + a3*a3;
+                }
             }
         }
 
@@ -766,7 +787,8 @@ namespace vmmc
             if (is3D) rotate3D(v1, moveParams.trialVector, v2, direction*moveParams.stepSize);
             else rotate2D(v1, v2, direction*moveParams.stepSize);
 
-            // Update position.
+            // v2 = R(delta) - delta, so adding it to the particle's own pre-move
+            // position gives: p + (R(delta)-delta) = seed + R(delta). Correct.
             for (unsigned int i=0;i<dimension;i++)
                 postMoveParticle.postMovePosition[i] += v2[i];
 
@@ -804,6 +826,16 @@ namespace vmmc
 
         // Apply periodic boundary conditions.
         applyPeriodicBoundaryConditions(postMoveParticle.postMovePosition);
+
+        // MHC: snap to integer lattice sites after rotation to remove floating-point
+        // residuals from sin/cos (e.g. cos(π/2) ≈ 6e-17 instead of 0).
+        // Re-apply PBC after rounding because round(11.9999...) = 12 can equal boxSize.
+        if (isLattice && moveParams.isRotation)
+        {
+            for (unsigned int i=0;i<dimension;i++)
+                postMoveParticle.postMovePosition[i] = round(postMoveParticle.postMovePosition[i]);
+            applyPeriodicBoundaryConditions(postMoveParticle.postMovePosition);
+        }
     }
 
     void VMMC::initiateParticle(unsigned int particle, Particle& linker)
