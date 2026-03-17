@@ -1141,17 +1141,43 @@ def _conformation_degeneracy(canonical_rel):
     return len(_symmetry_group(canonical_rel))
 
 
+_chain_order_cache = {}
+
+
 def conformation_key(coords_copy, L):
     """Conformation key invariant under translation, rotation, and reflection.
+
+    Uses cumulative minimum-image bond vectors along the backbone chain to
+    'unroll' coordinates into a PBC-free frame. This correctly handles chains
+    that span more than L/2 (possible with soft spring backbone), where a
+    per-particle minimum-image approach would place particles on the wrong side
+    relative to each other, producing bogus pairwise distances.
+
     coords_copy: numpy array shape (n0, 2).
     """
-    r0 = coords_copy[0]
-    rel = []
-    for i in range(1, len(coords_copy)):
-        d = coords_copy[i] - r0
-        d = d - L * np.round(d / L)  # minimum image
-        rel.append((round(d[0]), round(d[1])))
-    return _canonical_key(tuple(rel))
+    n0 = len(coords_copy)
+    if n0 not in _chain_order_cache:
+        _chain_order_cache[n0] = _chain_order(n0)
+    chain_order = _chain_order_cache[n0]
+
+    # Accumulate positions via min-image bond vectors (unrolled frame)
+    unrolled = {}
+    unrolled[chain_order[0]] = np.zeros(2)
+    for k in range(len(chain_order) - 1):
+        pid_a = chain_order[k]
+        pid_b = chain_order[k + 1]
+        raw = coords_copy[pid_b] - coords_copy[pid_a]
+        bond = raw - L * np.round(raw / L)
+        unrolled[pid_b] = unrolled[pid_a] + bond
+
+    # Express relative to particle 0
+    ref = unrolled[0]
+    rel = tuple(
+        (int(round(unrolled[pid][0] - ref[0])),
+         int(round(unrolled[pid][1] - ref[1])))
+        for pid in range(1, n0)
+    )
+    return _canonical_key(rel)
 
 
 def compute_conformation_energy(key, n0, coupling_matrices,
