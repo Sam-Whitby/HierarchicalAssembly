@@ -116,6 +116,13 @@ def parse_args():
                         "Hilbert-adjacent.")
     p.add_argument("--boltzmann", action="store_true",
                    help="Enable Boltzmann validation and canonical-state diagram (polymer mode only)")
+    p.add_argument("--enumerate-live", action="store_true",
+                   help="(with --boltzmann) Build the Boltzmann state set entirely from states "
+                        "visited during simulation, in addition to the pre-enumerated fixed-length "
+                        "backbone states.  Backbone bonds may have any lattice separation; spring "
+                        "energy k*(d-1)^2 is evaluated exactly at the observed distance rather than "
+                        "reading from the five discrete coupling matrices.  Required for accurate "
+                        "Boltzmann validation when using --spring-k.")
     p.add_argument("--denature", type=int, default=None,
                    help="Number of equilibration steps with all weak bonds zeroed (backbone "
                         "confinement only). Runs before the main simulation; the final "
@@ -1147,13 +1154,18 @@ def conformation_key(coords_copy, L):
     return _canonical_key(tuple(rel))
 
 
-def compute_conformation_energy(key, n0, coupling_matrices):
-    """Sum of weak coupling values for all pairs in the conformation.
+def compute_conformation_energy(key, n0, coupling_matrices,
+                                backbone_pairs=None, spring_k=None):
+    """Sum of coupling values for all pairs in the conformation.
 
-    Sign convention: positive value = attractive (C++ returns -value as pair energy).
-    Boltzmann weight = exp(+energy) [NOT exp(-energy)].
+    Sign convention: positive matrix value = attractive (C++ returns -value as pair energy).
+    Boltzmann weight = exp(+energy).
 
-    key: canonical relative position tuple for particles 1..n0-1 (relative to particle 0).
+    backbone_pairs: set of (i,j) backbone bond pairs (both orderings).  If provided together
+        with spring_k, backbone pairs use the exact Hookean formula -spring_k*(d-1)^2 at any
+        lattice separation instead of reading from the discrete coupling matrices.  The negative
+        sign preserves the convention: exp(-spring_k*(d-1)^2) -> less likely when stretched.
+    key: canonical relative-position tuple for particles 1..n0-1 (relative to particle 0).
     """
     positions = [(0, 0)]  # particle 0 at origin
     for dx, dy in key:
@@ -1170,14 +1182,22 @@ def compute_conformation_energy(key, n0, coupling_matrices):
             dx = positions[j][0] - positions[i][0]
             dy = positions[j][1] - positions[i][1]
             d2r = round(dx*dx + dy*dy)
-            if d2r == 1 and wD1 is not None:
-                energy += wD1[i, j]
-            elif d2r == 2 and wDsq2 is not None:
-                energy += wDsq2[i, j]
-            elif d2r == 4 and wD2 is not None:
-                energy += wD2[i, j]
-            elif d2r == 5 and wDsq5 is not None:
-                energy += wDsq5[i, j]
+            is_bb = (backbone_pairs is not None and
+                     ((i, j) in backbone_pairs or (j, i) in backbone_pairs))
+
+            if is_bb and spring_k is not None:
+                # Exact spring formula at any lattice distance.
+                # Stored as negative so Boltzmann weight = exp(-spring_k*(d-1)^2).
+                d = math.sqrt(d2r) if d2r > 0 else 0.0
+                energy += -spring_k * (d - 1.0) ** 2
+                # Level coupling at d=1 (spring = 0 at equilibrium, coupling still applies)
+                if d2r == 1 and wD1 is not None:
+                    energy += wD1[i, j]
+            else:
+                if   d2r == 1 and wD1   is not None: energy += wD1[i, j]
+                elif d2r == 2 and wDsq2 is not None: energy += wDsq2[i, j]
+                elif d2r == 4 and wD2   is not None: energy += wD2[i, j]
+                elif d2r == 5 and wDsq5 is not None: energy += wDsq5[i, j]
     return energy
 
 
@@ -1218,16 +1238,28 @@ def enumerate_canonical_states(n0):
     return result
 
 
-def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
+def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array,
+                          backbone_pairs=None, spring_k=None):
     """Compute Pearson correlation between observed and Boltzmann frequencies vs step count.
 
     Sign convention: C++ stores +coupling as attractive (returns -coupling as pair energy),
     so Boltzmann weight ∝ degeneracy × exp(+E_python) where E_python = sum of coupling values.
 
+    backbone_pairs / spring_k: when set, backbone pair energies are computed via the exact
+    Hookean formula -spring_k*(d-1)^2 at any observed lattice distance rather than reading
+    from the discrete coupling matrices.  This is required for accurate validation with
+    --spring-k (the --enumerate-live mode).
+
     Returns:
-        step_indices, correlations, obs_freq, boltz_freq, E_vals
+        step_indices, correlations, obs_freq, boltz_freq, E_vals, live_states
+        live_states: list of (key, example_rel, degeneracy) for all observed states,
+                     sorted by descending physical energy (most favourable first),
+                     suitable for passing to plot_all_states.
     """
     import collections
+
+    def _energy(k):
+        return compute_conformation_energy(k, n0, coupling_matrices, backbone_pairs, spring_k)
 
     nframes = len(frames)
     counts = collections.Counter()
@@ -1244,14 +1276,14 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
         counts[key] += 1
 
         if fi in check_at and len(counts) >= 2:
-            energies = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
-            E_vals  = np.array([energies[k] for k in counts])
-            degens  = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
+            energies   = {k: _energy(k) for k in counts}
+            E_vals     = np.array([energies[k] for k in counts])
+            degens     = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
             obs_counts = np.array([counts[k] for k in counts], dtype=float)
 
             # Boltzmann weight ∝ g × exp(+E_python)  [positive coupling = attractive in C++]
-            boltz = degens * np.exp(E_vals)
-            boltz /= boltz.sum()
+            boltz    = degens * np.exp(E_vals)
+            boltz   /= boltz.sum()
             obs_freq = obs_counts / obs_counts.sum()
 
             if len(obs_freq) >= 2 and np.std(obs_freq) > 0 and np.std(boltz) > 0:
@@ -1260,7 +1292,7 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
                 correlations.append(r)
 
     # Final state for scatter plot
-    energies   = {k: compute_conformation_energy(k, n0, coupling_matrices) for k in counts}
+    energies   = {k: _energy(k) for k in counts}
     E_vals     = np.array([energies[k] for k in counts])
     degens     = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
     obs_counts = np.array([counts[k] for k in counts], dtype=float)
@@ -1268,17 +1300,25 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array):
     boltz     /= boltz.sum()
     obs_freq   = obs_counts / obs_counts.sum()
 
-    return (np.array(step_indices), np.array(correlations), obs_freq, boltz, E_vals)
+    # Build live_states list for plot_all_states: sorted most-favourable first.
+    # key == example_rel for live states (canonical key is itself a valid example).
+    live_states = sorted(
+        [(k, k, _conformation_degeneracy(k)) for k in counts],
+        key=lambda x: -_energy(x[0])
+    )
+
+    return (np.array(step_indices), np.array(correlations), obs_freq, boltz, E_vals, live_states)
 
 
-def plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, state_energies, n0):
+def plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq,
+                              state_energies, n0, title_suffix=""):
     """Plot Boltzmann validation: Pearson r vs steps + observed vs predicted scatter."""
     if len(step_indices) < 2:
         print("Not enough data for Boltzmann validation plot.")
         return
 
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-    fig.suptitle(f"Boltzmann Validation  |  n0={n0}", fontsize=12)
+    fig.suptitle(f"Boltzmann Validation  |  n0={n0}{title_suffix}", fontsize=12)
 
     # Left: Pearson correlation vs number of simulation steps
     ax1.plot(step_indices, correlations, 'o-', lw=1.5, ms=4, color='steelblue')
@@ -1338,30 +1378,39 @@ def plot_weak_coupling_matrices(matrices, n0):
     plt.show()
 
 
-def plot_all_states(n0, coupling_matrices=None):
-    """Plot every canonically distinct conformation of the n0-bead polymer chain.
+def plot_all_states(n0, coupling_matrices=None, live_states=None,
+                    backbone_pairs=None, spring_k=None):
+    """Plot canonically distinct conformations of the n0-bead polymer chain.
 
-    Each state is shown as a small diagram: coloured circles (one per particle)
-    connected by lines along the chain backbone.  The title shows the state number,
-    degeneracy g (number of rotation/reflection copies), and, if coupling matrices
-    are provided, the weak-coupling energy.
+    Each state is shown as a small diagram: coloured circles connected by chain bonds.
+    Title shows state index, degeneracy g, and physical energy.
 
-    Linear (palindromic) conformations have g=4; general shapes have g=8.
-    The Boltzmann weight of each state ∝ g × exp(+E).
+    live_states: if provided (list of (key, example_rel, deg) from boltzmann_validation),
+        these simulation-observed states are shown instead of the DFS-enumerated set.
+        Allows states with stretched backbone bonds (d > sqrt(2)) to appear.
+    backbone_pairs / spring_k: passed to compute_conformation_energy so that backbone
+        spring energy is computed exactly for each observed distance.
     """
-    print("Enumerating canonical states...")
-    states = enumerate_canonical_states(n0)
-    n_states = len(states)
-    print(f"  Found {n_states} canonical conformations.")
+    if live_states is not None:
+        states = live_states
+        n_states = len(states)
+        source_label = f"{n_states} live-observed states"
+        print(f"  Plotting {n_states} simulation-observed canonical conformations.")
+    else:
+        print("Enumerating canonical states...")
+        states = enumerate_canonical_states(n0)
+        n_states = len(states)
+        source_label = f"{n_states} states, g=4 linear / g=8 general"
+        print(f"  Found {n_states} canonical conformations.")
 
     if coupling_matrices is not None:
-        # Sort by physical energy ascending (most negative = most favourable first)
         states = sorted(
             states,
-            key=lambda s: -compute_conformation_energy(s[0], n0, coupling_matrices),
+            key=lambda s: -compute_conformation_energy(
+                s[0], n0, coupling_matrices, backbone_pairs, spring_k),
         )
 
-    chain_seq = _chain_order(n0)          # e.g. [0,1,3,2] for n0=4
+    chain_seq = _chain_order(n0)
     colours = _slot_colours(n0)
 
     ncols = 7
@@ -1369,8 +1418,8 @@ def plot_all_states(n0, coupling_matrices=None):
     fig, axes = plt.subplots(nrows, ncols,
                              figsize=(2.2 * ncols, 2.4 * nrows))
     fig.suptitle(
-        f"All canonical conformations  |  n0={n0}  "
-        f"({n_states} states, g=4 linear / g=8 general)",
+        f"{'Live-observed' if live_states is not None else 'All'} canonical conformations"
+        f"  |  n0={n0}  ({source_label})",
         fontsize=11,
     )
 
@@ -1398,13 +1447,13 @@ def plot_all_states(n0, coupling_matrices=None):
 
         # Title — show physical energy (negative = favourable)
         if coupling_matrices is not None:
-            E_phys = -compute_conformation_energy(key, n0, coupling_matrices)
+            E_phys = -compute_conformation_energy(
+                key, n0, coupling_matrices, backbone_pairs, spring_k)
             title = f"{idx+1}. g={deg}  E={E_phys:.2f}"
         else:
             title = f"{idx+1}. g={deg}"
         ax.set_title(title, fontsize=6.5, pad=2)
 
-        # Axes limits
         xs = [positions[p][0] for p in range(n0)]
         ys = [positions[p][1] for p in range(n0)]
         m = 0.9
@@ -1413,7 +1462,6 @@ def plot_all_states(n0, coupling_matrices=None):
         ax.set_aspect('equal')
         ax.axis('off')
 
-    # Hide empty cells
     for idx in range(n_states, nrows * ncols):
         axes.flat[idx].axis('off')
 
@@ -1546,15 +1594,28 @@ def main():
                    backbone_pairs=backbone_pair_set)
 
         if args.boltzmann:
-            # Show all canonical conformations ranked by physical energy
+            # --- Standard validation: DFS-enumerated states, matrix energies ---
             plot_all_states(n0, coupling_matrices=polymer_matrices)
+            print("Running Boltzmann validation (pre-enumerated states)...")
+            step_indices, correlations, obs_freq, boltz_freq, state_energies, _ = \
+                boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps)
+            plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq,
+                                      state_energies, n0)
 
-            # Run Boltzmann validation
-            print("Running Boltzmann validation...")
-            step_indices, correlations, obs_freq, boltz_freq, state_energies = boltzmann_validation(
-                frames, n0, float(box_length), polymer_matrices, steps
-            )
-            plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq, state_energies, n0)
+            # --- Live validation: states built from simulation observations ---
+            # Uses exact spring energy at any backbone distance; required for --spring-k.
+            if args.enumerate_live:
+                live_bb_pairs = backbone_pair_set if args.spring_k is not None else None
+                live_spring_k = args.spring_k  # None if not set (falls back to matrix values)
+                print("Running Boltzmann validation (live-enumerated states)...")
+                (si_live, corr_live, obs_live, boltz_live, e_live, live_states) = \
+                    boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps,
+                                         backbone_pairs=live_bb_pairs, spring_k=live_spring_k)
+                plot_boltzmann_validation(si_live, corr_live, obs_live, boltz_live, e_live,
+                                          n0, title_suffix=" [live-enumerated]")
+                plot_all_states(n0, coupling_matrices=polymer_matrices,
+                                live_states=live_states,
+                                backbone_pairs=live_bb_pairs, spring_k=live_spring_k)
 
     else:
         # Resolve bond file / custom mode
