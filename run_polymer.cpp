@@ -352,7 +352,7 @@ int main(int argc, char** argv)
 
     /* ----------  Create output files  ---------- */
     InputOutput io;
-    io.appendXyzTrajectory(dimension, particles, box, true, n0, description, trajfile);
+    io.appendXyzTrajectory(dimension, particles, box, true, n0, description, trajfile, usePatch);
 
     stats = {0, StickySquare.getEnergy() * nParticles};
     nfrag = StickySquare.computeFragmentHistogram(n0, fragmenthist);
@@ -363,7 +363,7 @@ int main(int argc, char** argv)
     clock_t start_time = clock();
     for(int i=0; i<nsteps; i++) {
         vmmc += nsweep * nParticles;
-        io.appendXyzTrajectory(dimension, particles, false, trajfile);
+        io.appendXyzTrajectory(dimension, particles, false, trajfile, usePatch);
         stats = {(double)i, StickySquare.getEnergy() * nParticles};
         nfrag = StickySquare.computeFragmentHistogram(n0, fragmenthist);
         stats.insert(stats.end(), fragmenthist.begin(), fragmenthist.end());

@@ -588,7 +588,7 @@ def generate_denatured_bondfile(n0, e_backbone, path):
 
 def write_conf_from_last_frame(trajfile, confpath):
     """Read the last frame of a trajectory file and write it as an initial config."""
-    _, _, _, frames = parse_traj(trajfile)
+    _, _, _, frames, _ = parse_traj(trajfile)
     if not frames:
         sys.exit(f"Error: no frames found in {trajfile}")
     last = frames[-1]
@@ -765,33 +765,40 @@ def parse_stats(statsfile):
 
 
 def parse_traj(trajfile):
-    """Return (n_particles, box_length, n0, frames).
+    """Return (n_particles, box_length, n0, frames, ori_frames).
 
     Trajectory file format:
         <description line>
-        n_particles  box_length  n0          <- first frame header (3 values)
-                                             <- blank line
-        0  x  y  0.0000                      <- n_particles lines
+        n_particles  box_length  n0 [has_ori]  <- first frame header (3 or 4 values)
+                                               <- blank line
+        0  x  y  0.0000 [ox oy]               <- n_particles lines
         ...
-        n_particles                          <- subsequent frame headers (1 value)
-                                             <- blank line
-        0  x  y  0.0000
+        n_particles                            <- subsequent frame headers (1 value)
+                                               <- blank line
+        0  x  y  0.0000 [ox oy]
         ...
+
+    ori_frames is None if no orientations; otherwise a list of (n_particles, 2) arrays.
     """
     frames = []
+    ori_list = []
     with open(trajfile) as f:
         f.readline()  # description
 
-        # First frame header has 3 values: n, L, n0
+        # First frame header: n, L, n0 [, has_orientations]
         first_header = f.readline().split()
         n_particles = int(first_header[0])
         box_length = float(first_header[1])
         n0 = int(first_header[2])
+        has_orientations = (len(first_header) >= 4 and int(first_header[3]) == 1)
         f.readline()  # blank line
 
-        frame = _read_frame(f, n_particles)
-        if frame is not None:
-            frames.append(frame)
+        result = _read_frame(f, n_particles, has_orientations)
+        if result is not None:
+            coords, oris = result
+            frames.append(coords)
+            if has_orientations:
+                ori_list.append(oris)
 
         while True:
             header = f.readline()
@@ -803,17 +810,22 @@ def parse_traj(trajfile):
             if not header:
                 break
             f.readline()  # blank line
-            frame = _read_frame(f, n_particles)
-            if frame is None:
+            result = _read_frame(f, n_particles, has_orientations)
+            if result is None:
                 break
-            frames.append(frame)
+            coords, oris = result
+            frames.append(coords)
+            if has_orientations:
+                ori_list.append(oris)
 
-    return n_particles, box_length, n0, frames
+    ori_frames = ori_list if has_orientations else None
+    return n_particles, box_length, n0, frames, ori_frames
 
 
-def _read_frame(f, n_particles):
-    """Read n_particles lines; return (n_particles, 2) array of [x, y] or None."""
+def _read_frame(f, n_particles, has_orientations=False):
+    """Read n_particles lines; return ((n_particles,2) coords, (n_particles,2) oris or None)."""
     coords = []
+    oris = []
     for _ in range(n_particles):
         line = f.readline()
         if not line:
@@ -822,7 +834,11 @@ def _read_frame(f, n_particles):
         if len(parts) < 3:
             return None
         coords.append([float(parts[1]), float(parts[2])])
-    return np.array(coords)
+        if has_orientations and len(parts) >= 6:
+            oris.append([float(parts[4]), float(parts[5])])
+        else:
+            oris.append([1.0, 0.0])
+    return np.array(coords), np.array(oris)
 
 
 # ---------------------------------------------------------------------------
@@ -1155,7 +1171,28 @@ def _conformation_degeneracy(canonical_rel):
 _chain_order_cache = {}
 
 
-def conformation_key(coords_copy, L):
+def _ori_to_int(ori):
+    """Convert orientation vector to integer slot: 0=east, 1=north, 2=west, 3=south."""
+    ox, oy = float(ori[0]), float(ori[1])
+    if abs(ox - 1.0) < 0.5: return 0
+    if abs(oy - 1.0) < 0.5: return 1
+    if abs(ox + 1.0) < 0.5: return 2
+    return 3  # south
+
+
+def _get_patch_slot(ori, dx, dy):
+    """World direction (dx,dy) → local patch slot for a particle with orientation ori."""
+    ox, oy = float(ori[0]), float(ori[1])
+    lx = int(round(dx * ox + dy * oy))
+    ly = int(round(-dx * oy + dy * ox))
+    if lx ==  1 and ly ==  0: return 0
+    if lx ==  0 and ly ==  1: return 1
+    if lx == -1 and ly ==  0: return 2
+    if lx ==  0 and ly == -1: return 3
+    return -1
+
+
+def conformation_key(coords_copy, L, oris=None):
     """Conformation key invariant under translation, rotation, and reflection.
 
     Uses cumulative minimum-image bond vectors along the backbone chain to
@@ -1165,6 +1202,9 @@ def conformation_key(coords_copy, L):
     relative to each other, producing bogus pairwise distances.
 
     coords_copy: numpy array shape (n0, 2).
+    oris: optional numpy array shape (n0, 2) of orientation vectors.
+          When provided (patch mode), orientations are included in the key and
+          rotational/reflective symmetry folding is NOT applied (patches break it).
     """
     n0 = len(coords_copy)
     if n0 not in _chain_order_cache:
@@ -1188,11 +1228,19 @@ def conformation_key(coords_copy, L):
          int(round(unrolled[pid][1] - ref[1])))
         for pid in range(1, n0)
     )
-    return _canonical_key(rel)
+
+    if oris is None:
+        # No patches: fold under rotational/reflective symmetry
+        return _canonical_key(rel)
+    else:
+        # Patches present: orientations break global symmetry; include them in key
+        ori_ints = tuple(_ori_to_int(oris[pid]) for pid in range(n0))
+        return (rel, ori_ints)
 
 
 def compute_conformation_energy(key, n0, coupling_matrices,
-                                backbone_pairs=None, spring_k=None):
+                                backbone_pairs=None, spring_k=None,
+                                patch_slots=None, oris=None):
     """Sum of coupling values for all pairs in the conformation.
 
     Sign convention: positive matrix value = attractive (C++ returns -value as pair energy).
@@ -1202,16 +1250,33 @@ def compute_conformation_energy(key, n0, coupling_matrices,
         with spring_k, backbone pairs use the exact Hookean formula -spring_k*(d-1)^2 at any
         lattice separation instead of reading from the discrete coupling matrices.  The negative
         sign preserves the convention: exp(-spring_k*(d-1)^2) -> less likely when stretched.
-    key: canonical relative-position tuple for particles 1..n0-1 (relative to particle 0).
+    key: canonical relative-position tuple for particles 1..n0-1 (relative to particle 0)
+         OR (rel_tuple, ori_ints_tuple) when patch mode is active.
+    patch_slots: list of 4-element bool lists [e,n,w,s] per particle identity (n0 entries).
+    oris: tuple of orientation integers (one per particle) when patch mode is active.
     """
+    # Unpack key: in patch mode the key is (rel, ori_ints)
+    if isinstance(key, tuple) and len(key) == 2 and isinstance(key[0], tuple) and isinstance(key[1], tuple):
+        rel_key, ori_ints = key
+    else:
+        rel_key = key
+        ori_ints = oris  # may be None
+
     positions = [(0, 0)]  # particle 0 at origin
-    for dx, dy in key:
+    for dx, dy in rel_key:
         positions.append((dx, dy))
 
     wD1   = coupling_matrices.get('D1')
     wDsq2 = coupling_matrices.get('Dsq2')
     wD2   = coupling_matrices.get('D2')
     wDsq5 = coupling_matrices.get('Dsq5')
+
+    # Build orientation vectors from integer slots when patch mode active
+    _slot_to_vec = [(1,0), (0,1), (-1,0), (0,-1)]
+    def _ori_vec(pid):
+        if ori_ints is not None:
+            return _slot_to_vec[ori_ints[pid]]
+        return (1, 0)
 
     energy = 0.0
     for i in range(n0):
@@ -1231,7 +1296,17 @@ def compute_conformation_energy(key, n0, coupling_matrices,
                 if d2r == 1 and wD1 is not None:
                     energy += wD1[i, j]
             else:
-                if   d2r == 1 and wD1   is not None: energy += wD1[i, j]
+                if d2r == 1 and wD1 is not None:
+                    # Apply patch gate if patch mode active
+                    if patch_slots is not None and ori_ints is not None:
+                        s1 = _get_patch_slot(_ori_vec(i),  dx,  dy)
+                        s2 = _get_patch_slot(_ori_vec(j), -dx, -dy)
+                        if (s1 >= 0 and s2 >= 0 and
+                                patch_slots[i % len(patch_slots)][s1] and
+                                patch_slots[j % len(patch_slots)][s2]):
+                            energy += wD1[i, j]
+                    else:
+                        energy += wD1[i, j]
                 elif d2r == 2 and wDsq2 is not None: energy += wDsq2[i, j]
                 elif d2r == 4 and wD2   is not None: energy += wD2[i, j]
                 elif d2r == 5 and wDsq5 is not None: energy += wDsq5[i, j]
@@ -1276,7 +1351,8 @@ def enumerate_canonical_states(n0):
 
 
 def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array,
-                          backbone_pairs=None, spring_k=None):
+                          backbone_pairs=None, spring_k=None,
+                          ori_frames=None, patch_slots=None):
     """Compute Pearson correlation between observed and Boltzmann frequencies vs step count.
 
     Sign convention: C++ stores +coupling as attractive (returns -coupling as pair energy),
@@ -1287,6 +1363,9 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array,
     from the discrete coupling matrices.  This is required for accurate validation with
     --spring-k (the --enumerate-live mode).
 
+    ori_frames: list of (n0, 2) orientation arrays parallel to frames; enables patch mode.
+    patch_slots: list of 4-bool lists per particle identity; required with ori_frames.
+
     Returns:
         step_indices, correlations, obs_freq, boltz_freq, E_vals, live_states
         live_states: list of (key, example_rel, degeneracy) for all observed states,
@@ -1295,8 +1374,17 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array,
     """
     import collections
 
+    patch_mode = (ori_frames is not None and patch_slots is not None)
+
     def _energy(k):
-        return compute_conformation_energy(k, n0, coupling_matrices, backbone_pairs, spring_k)
+        return compute_conformation_energy(k, n0, coupling_matrices, backbone_pairs, spring_k,
+                                           patch_slots=patch_slots if patch_mode else None,
+                                           oris=None)  # oris embedded in key when patch_mode
+
+    def _degeneracy(k):
+        if patch_mode:
+            return 1  # orientations break symmetry; each (positions, oris) state is unique
+        return _conformation_degeneracy(k)
 
     nframes = len(frames)
     counts = collections.Counter()
@@ -1309,13 +1397,14 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array,
 
     for fi, frame in enumerate(frames):
         coords_copy = frame[:n0]
-        key = conformation_key(coords_copy, L)
+        oris_fi = ori_frames[fi][:n0] if patch_mode else None
+        key = conformation_key(coords_copy, L, oris=oris_fi)
         counts[key] += 1
 
         if fi in check_at and len(counts) >= 2:
             energies   = {k: _energy(k) for k in counts}
             E_vals     = np.array([energies[k] for k in counts])
-            degens     = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
+            degens     = np.array([_degeneracy(k) for k in counts], dtype=float)
             obs_counts = np.array([counts[k] for k in counts], dtype=float)
 
             # Boltzmann weight ∝ g × exp(+E_python)  [positive coupling = attractive in C++]
@@ -1331,16 +1420,21 @@ def boltzmann_validation(frames, n0, L, coupling_matrices, steps_array,
     # Final state for scatter plot
     energies   = {k: _energy(k) for k in counts}
     E_vals     = np.array([energies[k] for k in counts])
-    degens     = np.array([_conformation_degeneracy(k) for k in counts], dtype=float)
+    degens     = np.array([_degeneracy(k) for k in counts], dtype=float)
     obs_counts = np.array([counts[k] for k in counts], dtype=float)
     boltz      = degens * np.exp(E_vals)
     boltz     /= boltz.sum()
     obs_freq   = obs_counts / obs_counts.sum()
 
     # Build live_states list for plot_all_states: sorted most-favourable first.
-    # key == example_rel for live states (canonical key is itself a valid example).
+    # In patch mode, extract rel from (rel, ori_ints) key for display.
+    def _key_to_rel(k):
+        if patch_mode and isinstance(k, tuple) and len(k) == 2 and isinstance(k[0], tuple):
+            return k[0]
+        return k
+
     live_states = sorted(
-        [(k, k, _conformation_degeneracy(k)) for k in counts],
+        [(k, _key_to_rel(k), _degeneracy(k)) for k in counts],
         key=lambda x: -_energy(x[0])
     )
 
@@ -1612,7 +1706,7 @@ def main():
 
         print("Parsing output files...")
         steps, energy, fragment_hist = parse_stats(statsfile)
-        n_particles, box_length, n0, frames = parse_traj(trajfile)
+        n_particles, box_length, n0, frames, ori_frames = parse_traj(trajfile)
         print(f"  {len(frames)} frames  |  {n_particles} particles  |  box={box_length}  |  n0={n0}")
 
         # Build backbone pair set and bond table for animation
@@ -1641,6 +1735,30 @@ def main():
                    backbone_pairs=backbone_pair_set)
 
         if args.boltzmann:
+            # Build patch_slots from wD1 and backbone pairs when --patches is active
+            patch_slots_for_boltz = None
+            if args.patches and ori_frames is not None:
+                wD1_mat = polymer_matrices.get('D1')
+                l0 = round(math.sqrt(n0))
+                patch_slots_for_boltz = [[False]*4 for _ in range(n0)]
+                if wD1_mat is not None:
+                    for i in range(n0):
+                        col_i, row_i = i % l0, i // l0
+                        for j in range(n0):
+                            if wD1_mat[i, j] == 0.0:
+                                continue
+                            col_j, row_j = j % l0, j // l0
+                            ddx = col_j - col_i
+                            ddy = row_j - row_i
+                            if abs(ddx) + abs(ddy) != 1:
+                                continue
+                            if (i, j) in backbone_pair_set or (j, i) in backbone_pair_set:
+                                continue
+                            if   ddx ==  1: patch_slots_for_boltz[i][0] = True
+                            elif ddy ==  1: patch_slots_for_boltz[i][1] = True
+                            elif ddx == -1: patch_slots_for_boltz[i][2] = True
+                            elif ddy == -1: patch_slots_for_boltz[i][3] = True
+
             if args.enumerate_live:
                 # Live validation: build state set from simulation observations.
                 # Uses exact spring energy at any backbone bond distance.
@@ -1650,7 +1768,8 @@ def main():
                 print("Running Boltzmann validation (live-enumerated states)...")
                 (si_live, corr_live, obs_live, boltz_live, e_live, live_states) = \
                     boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps,
-                                         backbone_pairs=live_bb_pairs, spring_k=live_spring_k)
+                                         backbone_pairs=live_bb_pairs, spring_k=live_spring_k,
+                                         ori_frames=ori_frames, patch_slots=patch_slots_for_boltz)
                 print(f"  Boltzmann Pearson r (final) = {corr_live[-1]:.4f}")
                 plot_boltzmann_validation(si_live, corr_live, obs_live, boltz_live, e_live, n0)
                 plot_all_states(n0, coupling_matrices=polymer_matrices,
@@ -1662,7 +1781,9 @@ def main():
                 plot_all_states(n0, coupling_matrices=polymer_matrices)
                 print("Running Boltzmann validation (pre-enumerated states)...")
                 step_indices, correlations, obs_freq, boltz_freq, state_energies, _ = \
-                    boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps)
+                    boltzmann_validation(frames, n0, float(box_length), polymer_matrices, steps,
+                                         ori_frames=ori_frames, patch_slots=patch_slots_for_boltz)
+                print(f"  Boltzmann Pearson r (final) = {correlations[-1]:.4f}")
                 plot_boltzmann_validation(step_indices, correlations, obs_freq, boltz_freq,
                                           state_energies, n0)
 
@@ -1693,7 +1814,7 @@ def main():
 
         print("Parsing output files...")
         steps, energy, fragment_hist = parse_stats(statsfile)
-        n_particles, box_length, n0, frames = parse_traj(trajfile)
+        n_particles, box_length, n0, frames, _ = parse_traj(trajfile)
         print(f"  {len(frames)} frames  |  {n_particles} particles  |  box={box_length}  |  n0={n0}")
 
         make_plots(steps, energy, fragment_hist, n_particles, box_length, n0,

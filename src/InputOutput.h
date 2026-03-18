@@ -81,10 +81,10 @@ public:
         \param clearFile
             Whether to clear the trajectory file before writing.
      */
-    void appendXyzTrajectory(unsigned int, const std::vector<Particle>&, bool,const string& filename="trajectory.txt");
+    void appendXyzTrajectory(unsigned int, const std::vector<Particle>&, bool, const string& filename="trajectory.txt", bool saveOrientations=false);
 
     /* MHC: same as above, but prints box size & base # of particles, and description */
-    void appendXyzTrajectory(unsigned int, const std::vector<Particle>&, const Box&, bool, int n0=0, const string& description = "", const string& filename="trajectory.txt");
+    void appendXyzTrajectory(unsigned int, const std::vector<Particle>&, const Box&, bool, int n0=0, const string& description = "", const string& filename="trajectory.txt", bool saveOrientations=false);
 
     /* MHC: write stats to file */
     void appendStats(const vector<double>&, bool, const string& description="", const string& filename="trajectory_stats.txt");

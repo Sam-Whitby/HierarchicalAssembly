@@ -54,51 +54,62 @@ void InputOutput::appendStats(const vector<double>& stats, bool clearFile, const
 
 
 // MHC version
-void InputOutput::appendXyzTrajectory(unsigned int dimension, const std::vector<Particle>& particles, const Box& box, bool clearFile, int n0, const string& description,const string& filename)
+void InputOutput::appendXyzTrajectory(unsigned int dimension, const std::vector<Particle>& particles, const Box& box, bool clearFile, int n0, const string& description,const string& filename, bool saveOrientations)
 {
     FILE* pFile;
 
     // Wipe existing trajectory file.
     if (clearFile) {
-        //pFile = fopen("trajectory.xyz", "w");
         pFile = fopen(filename.c_str(), "w");
         fprintf(pFile, "%s\n", description.c_str());
         fclose(pFile);
     }
 
-    //pFile = fopen("trajectory.xyz", "a");
     pFile = fopen(filename.c_str(), "a");
-    fprintf(pFile, "%lu %5.4f %d\n\n", particles.size(), box.boxSize[0], n0);
+    // 4th field signals whether orientation columns (ox oy) are present in particle lines
+    fprintf(pFile, "%lu %5.4f %d %d\n\n", particles.size(), box.boxSize[0], n0, (int)saveOrientations);
 
     for (unsigned int i=0;i<particles.size();i++)
     {
-        fprintf(pFile, "0 %5.4f %5.4f %5.4f\n",
-            particles[i].position[0], particles[i].position[1], (dimension == 3) ? particles[i].position[2] : 0);
+        if (saveOrientations)
+            fprintf(pFile, "0 %5.4f %5.4f %5.4f %5.4f %5.4f\n",
+                particles[i].position[0], particles[i].position[1],
+                (dimension == 3) ? particles[i].position[2] : 0.0,
+                particles[i].orientation[0], particles[i].orientation[1]);
+        else
+            fprintf(pFile, "0 %5.4f %5.4f %5.4f\n",
+                particles[i].position[0], particles[i].position[1],
+                (dimension == 3) ? particles[i].position[2] : 0.0);
     }
 
     fclose(pFile);
 }
 
-void InputOutput::appendXyzTrajectory(unsigned int dimension, const std::vector<Particle>& particles, bool clearFile,const string& filename)
+void InputOutput::appendXyzTrajectory(unsigned int dimension, const std::vector<Particle>& particles, bool clearFile,const string& filename, bool saveOrientations)
 {
     FILE* pFile;
 
     // Wipe existing trajectory file.
     if (clearFile)
     {
-        //pFile = fopen("trajectory.xyz", "w");
         pFile = fopen(filename.c_str(), "a");
         fclose(pFile);
     }
 
-    //pFile = fopen("trajectory.xyz", "a");
     pFile = fopen(filename.c_str(), "a");
     fprintf(pFile, "%lu\n\n", particles.size());
 
     for (unsigned int i=0;i<particles.size();i++)
     {
-        fprintf(pFile, "0 %5.4f %5.4f %5.4f\n",
-            particles[i].position[0], particles[i].position[1], (dimension == 3) ? particles[i].position[2] : 0);
+        if (saveOrientations)
+            fprintf(pFile, "0 %5.4f %5.4f %5.4f %5.4f %5.4f\n",
+                particles[i].position[0], particles[i].position[1],
+                (dimension == 3) ? particles[i].position[2] : 0.0,
+                particles[i].orientation[0], particles[i].orientation[1]);
+        else
+            fprintf(pFile, "0 %5.4f %5.4f %5.4f\n",
+                particles[i].position[0], particles[i].position[1],
+                (dimension == 3) ? particles[i].position[2] : 0.0);
     }
 
     fclose(pFile);
