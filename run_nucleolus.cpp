@@ -63,12 +63,17 @@ extern double TOL;
 // ============================================================
 //  Target complex T  (n=2 Moore curve partitioned into 4 polymers)
 //
-//  Positions on a 4×4 grid (x,y) where x is column and y is row:
+//  Grid layout (y increases upward, x increases rightward):
 //
-//    Polymer 0 (local ids 0-3):   (0,0),(1,0),(1,1),(0,1)  bottom-left
-//    Polymer 1 (local ids 4-7):   (2,0),(3,0),(3,1),(2,1)  bottom-right
-//    Polymer 2 (local ids 8-11):  (2,2),(3,2),(3,3),(2,3)  top-right
-//    Polymer 3 (local ids 12-15): (0,2),(1,2),(1,3),(0,3)  top-left
+//    y=3:  1 1 1 2
+//    y=2:  1 0 2 2
+//    y=1:  0 0 2 3
+//    y=0:  0 3 3 3
+//
+//  Polymer 0 (local ids 0-3):   (0,0)→(0,1)→(1,1)→(1,2)   left S-shape
+//  Polymer 1 (local ids 4-7):   (0,2)→(0,3)→(1,3)→(2,3)   top-left L
+//  Polymer 2 (local ids 8-11):  (2,1)→(2,2)→(3,2)→(3,3)   right S-shape
+//  Polymer 3 (local ids 12-15): (1,0)→(2,0)→(3,0)→(3,1)   bottom-right L
 //
 //  Backbone (within each polymer, consecutive segment pairs):
 //    (0,1),(1,2),(2,3) | (4,5),(5,6),(6,7) | (8,9),(9,10),(10,11) | (12,13),(13,14),(14,15)
@@ -79,8 +84,8 @@ static const int N_POLYMER = 4;  // polymers per complex
 static const int N_SEG     = 4;  // segments per polymer
 
 // Target positions for local ids 0..15
-static const int TARGET_X[N0] = { 0,1,1,0,  2,3,3,2,  2,3,3,2,  0,1,1,0 };
-static const int TARGET_Y[N0] = { 0,0,1,1,  0,0,1,1,  2,2,3,3,  2,2,3,3 };
+static const int TARGET_X[N0] = { 0,0,1,1,  0,0,1,2,  2,2,3,3,  1,2,3,3 };
+static const int TARGET_Y[N0] = { 0,1,1,2,  2,3,3,3,  1,2,2,3,  0,0,0,1 };
 
 // Backbone consecutive pairs within each polymer (local ids)
 static const int BACKBONE_PAIRS[][2] = {
@@ -580,13 +585,18 @@ int main(int argc, char** argv)
                           maxInteractions, interactionEnergy, interactionRange,
                           interactions, (double)L_col, useGradient);
 
-    // --- Place particles as assembled copies of target complex T ---
-    // (If free-steps > 0 we start assembled; otherwise we start denatured)
-    if (freeSteps > 0 || denatureSteps > 0) {
-        placeAssembled(particles, cells, box, nCopies, W, L_col);
-    } else {
+    // --- Compute energy baseline from the fully assembled state ---
+    // Always place assembled first to get the reference energy (E=0 at step 0
+    // when starting assembled; backbone contribution cancels out of all plots).
+    placeAssembled(particles, cells, box, nCopies, W, L_col);
+    double baselineEnergy = model.getEnergy() * nParticles;
+
+    // Now set the actual initial state for the simulation
+    if (!(freeSteps > 0 || denatureSteps > 0)) {
+        // No assembled or denaturation phase: start from denatured linear chains
         placeParticles(particles, cells, box, nCopies, W);
     }
+    // else: keep the assembled state for phase 1
 
     // --- VMMC setup ---
     vector<double> coordinates(dimension * nParticles);
@@ -651,7 +661,7 @@ int main(int argc, char** argv)
     fprintf(fp_stat, "# step  energy  nExited  acceptRatio\n");
 
     // Write initial frame (step 0)
-    double initEnergy = model.getEnergy() * nParticles;
+    double initEnergy = model.getEnergy() * nParticles - baselineEnergy;
     const char* initPhase = (freeSteps > 0) ? "assembled" : (denatureSteps > 0 ? "denature" : "main");
     writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0, initPhase);
     fprintf(fp_stat, "0  %.4f  0  0.0000\n", initEnergy);
@@ -673,7 +683,7 @@ int main(int argc, char** argv)
             totalExited += nExited;
         }
 
-        double energy      = model.getEnergy() * nParticles;
+        double energy      = model.getEnergy() * nParticles - baselineEnergy;
         double acceptRatio = (double)vmmc.getAccepts() / (double)vmmc.getAttempts();
 
         bool doSave = (globalStep % saveEvery == 0) || (globalStep == totalSteps);
