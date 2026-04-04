@@ -285,6 +285,19 @@ namespace vmmc
         */
         void step(const int);
 
+        //! Sync a particle's internal pre-move position to match an externally
+        //! updated model position (e.g. after teleportation/replacement).
+        /*! \param particle
+                The particle index.
+            \param position
+                Pointer to the new position array (length = dimension).
+        */
+        void syncPosition(unsigned int particle, const double* position)
+        {
+            for (unsigned int d=0; d<dimension; d++)
+                particles[particle].preMovePosition[d] = position[d];
+        }
+
         //! Get the number of attempted moves.
         /*! \return
                 The number of attempted virtual moves.

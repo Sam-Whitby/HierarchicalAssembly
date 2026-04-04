@@ -246,7 +246,8 @@ static set<pair<int,int>> buildOccupancy(const vector<Particle>& particles)
 // ============================================================
 static bool replacementPlacement(
     vector<Particle>& particles, CellList& cells, Box& box,
-    const vector<int>& globalIds, int W, int L_col)
+    const vector<int>& globalIds, int W, int L_col,
+    vmmc::VMMC& vmmc)
 {
     // Build occupancy map excluding the particles to be replaced
     set<int> replSet(globalIds.begin(), globalIds.end());
@@ -284,6 +285,11 @@ static bool replacementPlacement(
                     box.periodicBoundaries(particles[gi].position);
                     int newCell = cells.getCell(particles[gi]);
                     cells.updateCell(newCell, particles[gi], particles);
+                    // Sync VMMC's internal preMovePosition to prevent stale-position
+                    // desync: without this, rotation moves can compute cluster-relative
+                    // displacements from the old (large-x) position, producing y values
+                    // many box-lengths out of range that exceed VMMC's single-wrap PBC.
+                    vmmc.syncPosition(gi, &particles[gi].position[0]);
                 }
             }
             return true;
@@ -346,7 +352,8 @@ static int buildComponents(NucleolusModel& model,
 static int checkAndReplace(NucleolusModel& model,
                             vector<Particle>& particles,
                             CellList& cells, Box& box,
-                            int nCopies, int W, int L_col)
+                            int nCopies, int W, int L_col,
+                            vmmc::VMMC& vmmc)
 {
     int nParticles = nCopies * N0;
     vector<int> fragmentID;
@@ -404,7 +411,7 @@ static int checkAndReplace(NucleolusModel& model,
         // Just sort by global index so backbone pairing is preserved.
         sort(comp.begin(), comp.end());
 
-        if (replacementPlacement(particles, cells, box, comp, W, L_col)) {
+        if (replacementPlacement(particles, cells, box, comp, W, L_col, vmmc)) {
             nReplaced++;
         }
     }
@@ -620,7 +627,7 @@ int main(int argc, char** argv)
 
         // Check for isolated components past x=L; remove and replace
         int nExited = checkAndReplace(model, particles, cells, box,
-                                       nCopies, W, L_col);
+                                       nCopies, W, L_col, vmmc);
         totalExited += nExited;
 
         double energy      = model.getEnergy() * nParticles;
