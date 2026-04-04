@@ -22,16 +22,16 @@
     ./run_nucleolus [options]
 
   Options:
-    --steps  N          number of VMMC steps per sweep × N particles  [10000]
-    --length L          condensate length in lattice units             [60]
-    --width  W          column width (periodic y direction)            [10]
+    --steps     N       total outer loop iterations (each = nParticles VMMC moves)  [10000]
+    --snapshots N       number of trajectory snapshots to save                      [1000]
+    --length    L       condensate length in lattice units                           [60]
+    --width     W       column width (periodic y direction)                          [10]
     --gradient          enable linear chemical gradient γ(x) = x/L
     --stokes            enable Stokes hydrodynamic drag (D ∝ 1/R)
-    --phi-sl  φ         fraction of Saturated-Link moves               [0.2]
-    --phi-rot φ         fraction of rotation moves                     [0.2]
-    --nsweep  S         VMMC steps per output frame (in units of N)    [1]
-    --output  PREFIX    prefix for output files                        [nucleolus]
-    --seed    S         RNG seed (0 = random)                          [0]
+    --phi-sl    φ       fraction of Saturated-Link moves                             [0.2]
+    --phi-rot   φ       fraction of rotation moves                                   [0.2]
+    --output    PREFIX  prefix for output files                                      [nucleolus]
+    --seed      S       RNG seed (0 = random)                                        [0]
 */
 
 #include <cmath>
@@ -412,15 +412,19 @@ static int checkAndReplace(NucleolusModel& model,
 }
 
 // ============================================================
-//  Write one frame to trajectory file (custom XYZ format).
+//  Write one frame to trajectory file (extended XYZ format).
+//  Header line 2 carries step, energy, cumulative exit count, and box params
+//  so that the visualizer can plot scalar time-series without a separate file.
 //  Columns: particle_id  polymer_type  x  y  copy
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
-                        int nCopies, double L_col, double W)
+                        int nCopies, double L_col, double W,
+                        long long step, double energy, long long totalExited)
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
-    fprintf(fp, "L=%.1f W=%.1f nCopies=%d\n", L_col, W, nCopies);
+    fprintf(fp, "step=%lld energy=%.6f exited=%lld L=%.1f W=%.1f nCopies=%d\n",
+            step, energy, totalExited, L_col, W, nCopies);
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -439,39 +443,46 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
 int main(int argc, char** argv)
 {
     // --- Defaults ---
-    long long nsteps   = 10000;
-    int  L_col         = 60;
-    int  W             = 10;
-    bool useGradient   = false;
-    bool useStokes     = false;
-    double phi_sl      = 0.2;
-    double phi_rot     = 0.2;
-    int  nsweep        = 1;
-    string outPrefix   = "nucleolus";
-    unsigned int seed  = 0;
+    long long nsteps    = 10000;
+    long long nsnaps    = 1000;
+    int  L_col          = 60;
+    int  W              = 10;
+    bool useGradient    = false;
+    bool useStokes      = false;
+    double phi_sl       = 0.2;
+    double phi_rot      = 0.2;
+    string outPrefix    = "nucleolus";
+    unsigned int seed   = 0;
 
     // --- Parse arguments ---
     for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i],"--steps")    && i+1<argc) { nsteps    = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--length")   && i+1<argc) { L_col     = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--width")    && i+1<argc) { W         = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--gradient"))             { useGradient = true; }
-        else if (!strcmp(argv[i],"--stokes"))               { useStokes   = true; }
-        else if (!strcmp(argv[i],"--phi-sl")   && i+1<argc) { phi_sl    = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--phi-rot")  && i+1<argc) { phi_rot   = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--nsweep")   && i+1<argc) { nsweep    = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--output")   && i+1<argc) { outPrefix = argv[++i]; }
-        else if (!strcmp(argv[i],"--seed")     && i+1<argc) { seed      = (unsigned int)atoi(argv[++i]); }
+        if      (!strcmp(argv[i],"--steps")     && i+1<argc) { nsteps    = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--snapshots") && i+1<argc) { nsnaps    = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--length")    && i+1<argc) { L_col     = atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--width")     && i+1<argc) { W         = atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--gradient"))               { useGradient = true; }
+        else if (!strcmp(argv[i],"--stokes"))                 { useStokes   = true; }
+        else if (!strcmp(argv[i],"--phi-sl")    && i+1<argc) { phi_sl    = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--phi-rot")   && i+1<argc) { phi_rot   = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--output")    && i+1<argc) { outPrefix = argv[++i]; }
+        else if (!strcmp(argv[i],"--seed")      && i+1<argc) { seed      = (unsigned int)atoi(argv[++i]); }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n"
                  << "Run ./run_nucleolus --help for usage.\n";
         }
     }
 
+    // Clamp snapshots to at most nsteps+1 (step 0 + nsteps steps)
+    if (nsnaps > nsteps + 1) nsnaps = nsteps + 1;
+    // Interval between saved frames (save every saveEvery steps, plus step 0)
+    long long saveEvery = (nsnaps <= 1) ? nsteps : max(1LL, nsteps / (nsnaps - 1));
+
     cout << "=== Nucleolus Assembly Simulation ===" << endl;
-    cout << "  steps=" << nsteps << " L=" << L_col << " W=" << W
-         << " gradient=" << useGradient << " stokes=" << useStokes
-         << " phi_sl=" << phi_sl << " phi_rot=" << phi_rot << endl;
+    cout << "  steps=" << nsteps << " snapshots=" << nsnaps
+         << " (every " << saveEvery << " steps)"
+         << "  L=" << L_col << " W=" << W
+         << "  gradient=" << useGradient << " stokes=" << useStokes
+         << "  phi_sl=" << phi_sl << " phi_rot=" << phi_rot << endl;
 
     // --- Parameters ---
     const int    nCopies    = 4;
@@ -593,33 +604,38 @@ int main(int argc, char** argv)
     }
     fprintf(fp_stat, "# step  energy  nExited  acceptRatio\n");
 
-    // Write initial frame
-    writeFrame(fp_traj, particles, nCopies, L_col, W);
+    // Write initial frame (step 0)
+    double initEnergy = model.getEnergy() * nParticles;
+    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0);
+    fprintf(fp_stat, "0  %.4f  0  0.0000\n", initEnergy);
 
     // --- Simulation loop ---
     cout << "Starting simulation..." << endl;
     clock_t startTime = clock();
     long long totalExited = 0;
 
-    for (long long step = 0; step < nsteps; step++) {
-        // Run nsweep × nParticles VMMC attempts
-        vmmc += nsweep * nParticles;
+    for (long long step = 1; step <= nsteps; step++) {
+        // One outer iteration = nParticles VMMC move attempts
+        vmmc += nParticles;
 
         // Check for isolated components past x=L; remove and replace
         int nExited = checkAndReplace(model, particles, cells, box,
                                        nCopies, W, L_col);
         totalExited += nExited;
 
-        // Write trajectory frame
-        writeFrame(fp_traj, particles, nCopies, L_col, W);
-
-        // Write stats
-        double energy = model.getEnergy() * nParticles;
+        double energy      = model.getEnergy() * nParticles;
         double acceptRatio = (double)vmmc.getAccepts() / (double)vmmc.getAttempts();
-        fprintf(fp_stat, "%lld  %.4f  %lld  %.4f\n",
-                step, energy, totalExited, acceptRatio);
 
-        if (step % 100 == 0) {
+        // Save snapshot if this step falls on a save interval or is the last step
+        bool doSave = (step % saveEvery == 0) || (step == nsteps);
+        if (doSave) {
+            writeFrame(fp_traj, particles, nCopies, L_col, W,
+                       step, energy, totalExited);
+            fprintf(fp_stat, "%lld  %.4f  %lld  %.4f\n",
+                    step, energy, totalExited, acceptRatio);
+        }
+
+        if (step % max(1LL, nsteps/20) == 0) {
             cout << "  step " << step << "/" << nsteps
                  << "  E=" << energy
                  << "  exited=" << totalExited
@@ -640,7 +656,7 @@ int main(int argc, char** argv)
     cout << "Statistics written to:  " << statFile << endl;
     cout << "\nTo visualize:" << endl;
     cout << "  python3 visualize_nucleolus.py " << trajFile
-         << " --length " << L_col << " --width " << W << endl;
+         << " --gradient-length " << L_col << " --width " << W << endl;
 
     return EXIT_SUCCESS;
 }

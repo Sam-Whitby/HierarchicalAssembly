@@ -1,31 +1,213 @@
-# HierarchicalAssembly
+# Nucleolus Assembly / HierarchicalAssembly
 
-Simulates systems of sticky squares on a 2D square lattice using the Virtual Move Monte Carlo (VMMC) algorithm. Based on:
+Simulates self-assembly of patchy-particle systems on a 2D square lattice using
+the Virtual Move Monte Carlo (VMMC) algorithm.
 
+Two simulation modes are available:
+
+| Mode | Binary | Description |
+|---|---|---|
+| **Hierarchical assembly** | `run_hier`, `run_polymer`, `run_custom` | General-purpose Gō-model polymers with hierarchical couplings, Boltzmann validation, and parameter scanning. See [Hierarchical assembly](#hierarchical-assembly) below. |
+| **Nucleolus assembly** | `run_nucleolus` | Nucleolus ribogenesis model from Chapter 2 of Sam Whitby's PhD thesis. Gradient-modulated assembly in a condensate column with removal/reinjection. See [Nucleolus assembly](#nucleolus-assembly) below. |
+
+Based on:
 > Holmes-Cerfon, M. and Wyart, M., 2025. Hierarchical self-assembly for high-yield addressable complexity at fixed conditions. [arXiv:2501.02611](https://arxiv.org/abs/2501.02611)
 
 The `StickySquares` class is adapted from [vmmc.xyz](http://vmmc.xyz/), extended for lattice particles with direction-specific patchy interactions.
 
 ---
 
-## Quick start
+## Build
 
 ```bash
 mkdir -p obj          # once only
 
+make run_nucleolus    # nucleolus simulation (Chapter 2)
 make                  # builds run_hier (hierarchical assembly)
-make run_custom       # builds run_custom (arbitrary bond strengths)
-make run_polymer      # builds run_polymer (polymer / confinement mode)
+make run_custom       # builds run_custom
+make run_polymer      # builds run_polymer
+```
 
+Requires a C++11 compiler (`g++`). Python 3 with `numpy` and `matplotlib` for visualisation.
+
+---
+
+# Nucleolus assembly
+
+## Physics
+
+The system contains `nCopies = 4` copies of a 16-particle target complex `T`.
+Each complex is made of 4 polymers × 4 segments, arranged on a 4×4 grid following
+the n=2 Moore (space-filling) curve and partitioned into quadrants:
+
+```
+Polymer 3: (0,2)(1,2)(1,3)(0,3)  |  Polymer 2: (2,2)(3,2)(3,3)(2,3)
+───────────────────────────────────┼──────────────────────────────────
+Polymer 0: (0,0)(1,0)(1,1)(0,1)  |  Polymer 1: (2,0)(3,0)(3,1)(2,1)
+```
+
+The column has a hard wall at `x = 0`, periodic boundaries in `y` with period `W`,
+and extends to large `x`. Particles can drift past `x = L` before being removed.
+
+### Interactions (J = 8, ε = 0.5)
+
+All weak coupling is stored in 16×16 matrices indexed by local particle id (0–15).
+
+| Condition | d = 1 | d = √2 | d = 2 |
+|---|---|---|---|
+| Same polymer type | −J (repulsive) | −J | −εJ |
+| Cross-type, Gō neighbours in T at d = 1 | +J | — | — |
+| Cross-type, Gō neighbours in T at d = √2 | — | +εJ | — |
+| All other cross-type pairs | 0 | 0 | 0 |
+
+Backbone bonds (consecutive segments within each polymer) are stored as strong
+`Triples` (value 1000 ≈ ∞) and are **never** scaled by the gradient.
+Hard-core overlap (`d < 1`) is always forbidden.
+
+### Chemical gradient
+
+When `--gradient` is set, all weak couplings between particles `i` and `j` are
+scaled by `γ(xᵢ) · γ(xⱼ)` where:
+
+```
+γ(x) = min(x / L, 1)
+```
+
+Near `x = 0` all interactions are suppressed (denatured / disordered regime).
+Full coupling is reached at `x ≥ L` (assembled / folded regime).
+Backbone bonds are unaffected.
+
+### Saturated-Link (SL) moves
+
+A fraction `φ_SL` of VMMC steps are designated Saturated-Link moves. During an
+SL move the algorithm tracks which of the 16 particle types
+(`particle_id % 16`) are already in the moving cluster. When considering
+whether to recruit a neighbour, if that neighbour's type is already represented
+the link is skipped. This removes the kinetic frustration caused by repulsive
+same-type interactions and is required for efficient sampling in the repulsive/
+attractive coupling scheme.
+
+### Removal and replacement
+
+After every iteration a BFS is run over the interaction graph to find connected
+components. A component is **removed and reinserted** if:
+
+1. It contains exactly 16 particles (one complete complex worth).
+2. All its particles have `x > L`.
+3. It has no non-backbone interactions with anything outside itself.
+
+Removed particles are reinserted as 4 denatured horizontal chains near `x = 1`
+in the first free 4×4 block found by scanning upward from `x = 1`. If no space
+is available the component waits in place.
+
+## Running a simulation
+
+```
+./run_nucleolus [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--steps N` | 10000 | Total outer iterations. Each iteration = `N_particles` VMMC move attempts + one removal/replacement check. |
+| `--snapshots N` | 1000 | Number of trajectory frames to save. Frames are written at evenly spaced intervals so the file stays manageable regardless of step count. |
+| `--length L` | 60 | Condensate column length in lattice units. |
+| `--width W` | 10 | Column width (y periodic with period W). |
+| `--gradient` | off | Enable the linear chemical gradient. |
+| `--stokes` | off | Stokes hydrodynamic drag: diffusion ∝ 1/R per cluster. Without this flag all cluster sizes diffuse equally. |
+| `--phi-sl φ` | 0.2 | Fraction of SL moves (0 = none, 1 = all). |
+| `--phi-rot φ` | 0.2 | Fraction of rotation moves. |
+| `--output PREFIX` | `nucleolus` | Output file prefix → `PREFIX_traj.txt` and `PREFIX_stats.txt`. |
+| `--seed S` | 0 | RNG seed; 0 uses a time-based seed. |
+
+### Example
+
+```bash
+./run_nucleolus \
+    --steps 100000  --snapshots 1000 \
+    --length 40     --width 10       \
+    --gradient      --stokes         \
+    --phi-sl 0.2    --phi-rot 0.2    \
+    --output my_run
+```
+
+Runs 100 000 iterations, saves 1000 frames to `my_run_traj.txt`, with the
+chemical gradient and Stokes drag enabled.
+
+## Output files
+
+### `PREFIX_traj.txt` — trajectory
+
+Extended XYZ format. Each frame:
+
+```
+<N_particles>
+step=S energy=E exited=X L=LL W=WW nCopies=C
+<id> <poly_type> <x> <y> <copy>
+...
+```
+
+The header carries the simulation step, total system energy, cumulative
+exited-complex count, and box parameters, so no separate file is needed for
+time-series plots.
+
+### `PREFIX_stats.txt` — scalar time series
+
+Tab-separated: `step  energy  nExited  acceptRatio`. One row per saved frame.
+
+## Visualising
+
+```bash
+python3 visualize_nucleolus.py PREFIX_traj.txt \
+        --gradient-length 40 --width 10
+```
+
+Opens a 3-panel animated figure:
+
+- **Left**: particle positions coloured by polymer type (hue = type, shade =
+  copy), backbone bonds drawn as dark lines, blue gradient overlay from x=0 to
+  x=L, dashed line at the column boundary.
+- **Top right**: system energy vs simulation step. Full time series in grey,
+  current frame highlighted in red.
+- **Bottom right**: cumulative exited complexes vs step, highlighted in green.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--output FILE` | display | Save to `.mp4` (requires ffmpeg) or `.gif` (requires Pillow). |
+| `--fps N` | 5 | Playback frame rate. |
+| `--gradient-length L` | from file | Column length for gradient overlay. |
+| `--width W` | from file | Column width. |
+| `--skip N` | 1 | Render every N-th frame to speed up display of large files. |
+| `--title TEXT` | automatic | Figure title. |
+
+### Save to file
+
+```bash
+# MP4 (requires ffmpeg)
+python3 visualize_nucleolus.py my_run_traj.txt \
+        --gradient-length 40 --width 10 \
+        --output my_run.mp4 --fps 10
+
+# GIF
+python3 visualize_nucleolus.py my_run_traj.txt \
+        --gradient-length 40 --output my_run.gif
+```
+
+---
+
+# Hierarchical assembly
+
+## Quick start
+
+```bash
 # 4-bead polymer, hard-confinement backbone, random weak couplings
 python run_and_plot.py --polymer 4 --L 12 --nsteps 100000 --nsweep 1 \
   --e1 1000 --weak-e 1.0 --weak-std 0.5 --weak-seed 42 --sim-seed 7
 
-# Boltzmann validation (pre-enumerated, hard-confinement backbone)
+# Boltzmann validation
 python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
   --e1 1000 --weak-e 1.0 --weak-std 0.5 --weak-seed 42 --sim-seed 7 --boltzmann
 
-# 4-bead polymer with spring backbone k=1, zero level coupling, live Boltzmann validation
+# 4-bead polymer with spring backbone k=1
 python run_and_plot.py --polymer 4 --L 12 --nsteps 100000 --nsweep 1 \
   --hier-red 0 --spring-k 1 --sim-seed 42 --boltzmann --enumerate-live
 
@@ -38,323 +220,152 @@ python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
   --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --spring-k 50 \
   --denature 10000 --sim-seed 42
 
-# Non-specific bonding: any same-level pair can bond, not just Hilbert neighbours
+# Non-specific bonding
 python run_and_plot.py --polymer 64 --L 20 --nsteps 200000 --nsweep 1 \
   --hier-red 3.0 --hier-green 2.0 --hier-blue 1.0 --spring-k 50 --unspecific --sim-seed 42
 
-# Enable rotational moves (50% rotations, 50% translations)
+# Enable rotational moves (50/50)
 python run_and_plot.py --polymer 4 --L 12 --nsteps 100000 --nsweep 1 \
   --hier-red 0 --spring-k 1 --sim-seed 42 --prob-translate 0.5
 
-# Boltzmann validation with rotational moves (requires --enumerate-live for spring backbone)
-python run_and_plot.py --polymer 4 --L 12 --nsteps 1000000 --nsweep 1 \
-  --hier-red 0 --spring-k 1 --sim-seed 42 --prob-translate 0.5 --boltzmann --enumerate-live
-
-# Scan RED bond energy from 0..20 with multiple repeats and time curves (edit scan_config.ini first)
+# Parameter scan
 python scan_assembly.py scan_config.ini
 ```
 
 Press **spacebar** to pause/resume the animation.
 
----
-
 ## Drivers
 
 | Binary | Source | Description |
-|--------|--------|-------------|
-| `run_hier` | `run_hier.cpp` | Hierarchical self-assembly with bond strengths e1, e1/2, e1/4, … at sub-block boundaries |
+|---|---|---|
+| `run_hier` | `run_hier.cpp` | Hierarchical self-assembly with bond strengths e1, e1/2, e1/4, … |
 | `run_custom` | `run_custom.cpp` | Arbitrary omni-directional + diagonal bonds from a bond file |
-| `run_polymer` | `run_polymer.cpp` | Polymer mode: extended bond file with BACKBONE + WEAK_D* sections, seeded RNG, pre-assembled initial config |
-
----
+| `run_polymer` | `run_polymer.cpp` | Polymer mode: BACKBONE + WEAK_D* sections, seeded RNG, pre-assembled initial config |
 
 ## Polymer mode (`--polymer N`)
 
-`--polymer N` automates polymer simulation of an N-bead chain.
+`--polymer N` simulates an N-bead chain arranged on a Hilbert / boustrophedon
+path on the lattice. Backbone-bonded pairs are those consecutive in the chain.
 
-### Chain topology
+### Backbone
 
-Particle identities are arranged in a boustrophedon (snake) path — or Hilbert space-filling curve for power-of-2 √N — so that chain-adjacent particles have positions close in the Hilbert-curve order. The chain order determines which particles are backbone-bonded and which hierarchical coupling level applies to each pair.
+**Hard-wall confinement** (default): strongly repulsive wD2/wDsq5 entries trap
+backbone bonds at d ∈ {1, √2}.
 
-### Backbone confinement
-
-Two options, selected via the absence or presence of `--spring-k`:
-
-**Hard-wall confinement** (default, `--e1 E`): strongly repulsive entries are added to `wD2` and `wDsq5` for each backbone-bonded pair, trapping every bond at d ∈ {1, √2}. The BACKBONE section of the bond file is empty; all physics is in the coupling matrices.
-
-**Spring backbone** (`--spring-k K`): replaces hard-wall with a Hookean spring E(d) = k·(d−1)². Implemented **entirely in C++** (`StickySquare::computePairEnergy`) at any bond distance:
-
-1. `computeInteractions` is overridden to always add backbone partners to the neighbour list, bypassing the cell-list cutoff.
-2. `computePairEnergy` returns `k·(d−1)²` for backbone pairs (from actual MIC distance), plus `wD1` level coupling at d=1.
-3. `computeEnergy` is overridden to use the above two methods.
-
-Choose k small enough that conformational changes are thermally accessible: with VMMC lattice moves, the backbone partner is recruited with probability 1−exp(−k·(√2−1)²) when a bond would stretch, so for large k the chain moves as a rigid body and conformational changes are rare.
+**Spring backbone** (`--spring-k K`): Hookean spring E(d) = k·(d−1)² computed
+in C++ at any distance. Choose small k (≲ 3–4) for flexible chains with
+efficient sampling.
 
 ### Coupling modes
 
-**Random weak couplings** (default): each matrix entry drawn from N(weak_e, weak_std). Use `--weak-seed` for reproducibility.
+| Mode | Flags | Description |
+|---|---|---|
+| Random | `--weak-e E --weak-std S` | Each matrix entry ~ N(E, S) |
+| Hilbert-local | `--hilbert-A A --hilbert-B B` | Non-zero only between Hilbert-grid-adjacent pairs |
+| Hierarchical | `--hier-red R --hier-green G --hier-blue B` | Three-level hierarchy: RED = same group of 4, GREEN = same quarter, BLUE = across quarters |
 
-**Hilbert-local couplings** (`--hilbert-A A --hilbert-B B`): non-zero couplings only between Hilbert-grid-adjacent non-backbone pairs (A for cardinal neighbours, B for diagonal). Requires √N to be a power of 2.
+**Non-specific** (`--unspecific`): all same-level pairs attract at any d=1 or d=√2, not just Hilbert neighbours.
 
-**Hierarchical Hilbert couplings** (`--hier-red R --hier-green G --hier-blue B`): three-level hierarchy applied to Hilbert-curve chain. Coupling strength is set by where the two particles sit in the chain traversal order:
-
-| Level | Condition | Coupling | Animation colour |
-|-------|-----------|----------|-----------------|
-| RED   | same group of 4 consecutive chain positions | `--hier-red` | red |
-| GREEN | same top-level quarter, different group of 4 | `--hier-green` | green |
-| BLUE  | different top-level quarters | `--hier-blue` | blue |
-
-In specific mode (default): each coupling fires only between Hilbert-grid-adjacent pairs at their native Hilbert distance (d=1 → `wD1`; d=√2 → `wDsq2`). Backbone-bonded pairs receive level coupling at d=1 (spring mode) or no coupling (hard-confinement).
-
-In non-specific mode (`--unspecific`): every pair (i,j) can attract at **any** physical d=1 or d=√2, based on their chain-position relationship. The Hilbert curve is no longer guaranteed to be the ground state — compact same-level clusters can have more pairwise contacts. The competition is controlled by the ratio `e_red / k`: for large `k` backbone stiffness prevents clustering; for large `e_red` compact clusters win.
-
-**Denaturation pre-equilibration** (`--denature STEPS`): runs STEPS steps with all weak couplings zeroed (backbone only) before the main simulation, dispersing the initial assembled configuration.
-
-### Animation window
-
-| Panel | Contents |
-|-------|----------|
-| Left (full height) | Animated lattice: coloured particle discs, two-layer bond drawing |
-| Top-right | Total energy and running average vs simulation step |
-| Bottom-right (×5) | Coupling matrices D0, D1, D√2, D2, D√5 as static heatmaps |
-
-**Two-layer bond drawing:**
-1. **Coloured layer** (wide, semi-transparent): red/green/blue by hierarchical level; backbone pairs also receive their level colour.
-2. **Black backbone layer** (thin, on top): drawn for every backbone pair at any physical distance, including stretched bonds across periodic boundaries.
-3. **Green dashed lines**: when yield > 0 but no fully assembled groups exist yet, dashed lines connect particle pairs that have formed native RED contacts (i.e. the bonds that contribute to the yield calculation). Useful for diagnosing partial assembly.
-
-**Coupling matrix panels** show static physical energies: red = repulsive, blue = attractive. For spring backbone, backbone pairs show spring penalties k·(d−1)² in the Dsq2/D2/Dsq5 panels; D0 shows a uniform repulsive marker for all pairs (representing universal hard-sphere exclusion).
-
-### Energy sign convention
-
-**Negative physical energy = attractive / favourable.**
-
-The C++ engine stores `pair_energy = −coupling_value` (positive coupling → attractive). Boltzmann weight:
-
-```
-P(state) ∝ g × exp(+E_python) = g × exp(−E_physical)
-```
-
-where `E_python = sum of coupling values` and `E_physical = −E_python`.
+**Denaturation** (`--denature N`): N steps with weak bonds zeroed before main run.
 
 ### Boltzmann validation (`--boltzmann`)
 
-Checks that the simulation samples the correct Boltzmann distribution. Two modes:
+Checks the simulation samples the correct Boltzmann distribution.
 
-**Pre-enumerated** (default, `--boltzmann` without `--enumerate-live`):
-- Enumerates all canonically distinct conformations by depth-first self-avoiding walk on the 8-connected lattice.
-- Energies computed from coupling matrices.
-- Shows: canonical-state diagram (all enumerated states sorted by energy) + Boltzmann correlation figure.
-- **Suitable for hard-confinement backbone**, where backbone bonds are restricted to d=1 or d=√2. With spring backbone, longer-bond states are missing from the enumeration and the comparison is incomplete.
+- **Pre-enumerated** (default): enumerates conformations by DFS. Suitable for hard-confinement backbone.
+- **Live-enumerated** (`--enumerate-live`): builds state set from observations. Required for spring backbone.
 
-**Live-enumerated** (`--boltzmann --enumerate-live`):
-- Builds the state set entirely from simulation observations; no prior enumeration.
-- Backbone spring energy is computed exactly at the observed distance (not from matrix values).
-- Shows: live state diagram (up to 50 states; total count shown if more) + Boltzmann correlation figure.
-- **Required for spring backbone** (`--spring-k`), since bonds can stretch to d=2, √5, etc. Also handles chains that temporarily span more than L/2 across periodic boundaries via cumulative minimum-image bond-vector unrolling.
+Both modes show a Pearson-r convergence plot and observed-vs-predicted frequency scatter.
 
-Both figures show:
-- Left: Pearson r between observed and Boltzmann-predicted frequencies vs simulation frame (log scale). Convergence to r ≈ 1 confirms detailed balance.
-- Right: Scatter of observed vs predicted frequency at the final frame, coloured by physical energy.
-
-**Kinetic convergence:** for spring backbone with large k, VMMC recruits the backbone partner with probability ≈ 1−exp(−k·(√2−1)²) whenever a bond would stretch, making the chain rigid and conformational changes rare. Use k ≲ 3–4 for 100k-step validation runs with n=4.
-
----
-
-## Parameter scan (`scan_assembly.py`)
-
-Sweeps RED bond energy over a range of values and time points, running multiple independent repeats per condition, and produces a yield-vs-energy plot showing the kinetic/thermodynamic crossover.
+## Parameter scan
 
 ```bash
 python scan_assembly.py scan_config.ini
 ```
 
-Configure `scan_config.ini`:
-
-```ini
-[simulation]
-polymer        = 64          # chain length (sqrt must be power of 2)
-L              = 40          # box side length
-nsweep         = 1           # sweeps per output step
-hier_green     = 0.0         # GREEN and BLUE couplings (set to 0 to isolate RED level)
-hier_blue      = 0.0
-spring_k       = 0.05        # spring backbone stiffness (or None for hard-wall)
-e1             = 8.0         # hard-wall backbone energy (used during denaturation phase)
-sim_seed       = 42          # base RNG seed (repeat r uses seed + r)
-unspecific     = true        # non-specific bonding
-n_neighbours   = 8           # VMMC lattice directions: 4 or 8
-denature_steps = 1000        # pre-equilibration steps with weak bonds zeroed
-
-[scan]
-hier_red_values = 0,1,2,3,4,5,6,7,8,9,10,20   # RED energies to test
-nsteps_curves   = 1,10,100,1000                # time points for yield measurement
-
-[output]
-output_dir = scan_results    # directory for per-condition subdirs + summary CSV + plot
-n_repeats  = 5               # independent repeats per condition
-```
-
-**Output:** `scan_results/yields.csv` (per-condition yields) and a yield-vs-energy PNG with one curve per time point and error bars across repeats.
-
----
+Sweeps RED bond energy over a range of values and time points with multiple
+repeats per condition, producing a yield-vs-energy plot with error bars.
 
 ## Python wrapper flags
 
 ### All modes
 
 | Flag | Description |
-|------|-------------|
-| `--n0 N` | Target structure size (default: 16) |
-| `--e1 E` | Bond / backbone confinement energy (default: 8.0) |
+|---|---|
+| `--n0 N` | Target structure size (default 16) |
+| `--e1 E` | Bond / backbone confinement energy (default 8.0) |
 | `--L N` | Box side length |
 | `--nsteps N` | Number of output steps |
 | `--nsweep N` | MC sweeps per step |
 | `--dens D` | Particle density (alternative to `--L`) |
 | `--ncopies N` | Number of target copies |
-| `--filehead STR` | Prefix for output files (default: `hier`) |
-| `--no-run` | Skip simulation, re-plot existing output files |
+| `--filehead STR` | Output file prefix (default `hier`) |
+| `--no-run` | Skip simulation, re-plot existing files |
 
 ### Polymer mode
 
 | Flag | Description |
-|------|-------------|
-| `--polymer N` | Polymer size N (perfect square). Sets n0=N, 1 copy. |
-| `--e1 E` | Hard-wall backbone confinement energy (not used with `--spring-k`). |
-| `--weak-e E` | Mean weak coupling (default: 1.0) |
-| `--weak-std S` | Std dev of weak couplings (default: 0.5) |
-| `--weak-seed N` | RNG seed for coupling matrix generation |
-| `--hilbert-A A` | Coupling for Hilbert cardinal neighbours. Activates Hilbert-local mode. |
-| `--hilbert-B B` | Coupling for Hilbert diagonal neighbours |
-| `--hier-red R` | RED coupling (finest level). Activates hierarchical Hilbert mode. |
+|---|---|
+| `--polymer N` | Polymer size N |
+| `--weak-e E` | Mean weak coupling |
+| `--weak-std S` | Std dev of weak couplings |
+| `--weak-seed N` | Seed for coupling matrix |
+| `--hilbert-A A` | Hilbert cardinal neighbour coupling |
+| `--hilbert-B B` | Hilbert diagonal neighbour coupling |
+| `--hier-red R` | RED coupling (finest level) |
 | `--hier-green G` | GREEN coupling (middle level) |
 | `--hier-blue B` | BLUE coupling (coarsest level) |
-| `--spring-k K` | Spring backbone stiffness k: E(d)=k·(d−1)², computed in C++ at all distances. Replaces `--e1` hard-wall confinement. |
-| `--unspecific` | Non-specific bonding: all same-level pairs bond at any d=1 or d=√2, not just Hilbert neighbours. Only meaningful with `--hier-*`. |
-| `--denature N` | Pre-equilibration: N steps with weak bonds zeroed before main run |
-| `--sim-seed N` | RNG seed for C++ simulation |
-| `--prob-translate P` | Fraction of VMMC moves that are translations (default 1.0). Set < 1 to enable rotational moves (e.g. 0.5 for 50/50). |
-| `--n-neighbours N` | Lattice directions for VMMC translation moves: 4 = cardinal only, 8 = cardinal + diagonal (default 4). |
-| `--boltzmann` | Enable Boltzmann validation (see below) |
-| `--enumerate-live` | Use live-observed state enumeration for Boltzmann validation (required for `--spring-k`). Without this flag, uses pre-enumerated DFS states. |
-
----
-
-## Bond file formats
-
-### Simple format (`run_custom` / `--bond-file`)
-
-```
-# comment
-particle_i  particle_j  energy
-```
-
-Bonds are omni-directional and active at both d=1 and d=√2.
-
-### Extended format (`run_polymer`)
-
-```
-BACKBONE
-# (empty in confinement-encoding mode)
-BACKBONE_END
-
-WEAK_D1
-i j energy
-...
-WEAK_D1_END
-
-WEAK_DSQRT2
-...
-WEAK_DSQRT2_END
-
-WEAK_D2
-...
-WEAK_D2_END
-
-WEAK_DSQRT5
-...
-WEAK_DSQRT5_END
-
-# Spring backbone sections (written when --spring-k is set):
-
-SPRING_K
-10.000000
-SPRING_K_END
-
-SPRING_BACKBONE
-0 1
-1 3
-3 2
-...
-SPRING_BACKBONE_END
-```
-
-Entries in WEAK_D* sections are upper-triangle (i ≤ j); the matrix is symmetric. Positive values are attractive; negative values are repulsive.
-
-When `SPRING_K` and `SPRING_BACKBONE` sections are present, C++ computes E(d) = k·(d−1)² on the fly for backbone pairs and ignores their wDsq2/wD2/wDsq5 matrix entries. Every backbone bond need only be listed once (i j); the C++ reader symmetrises automatically.
-
----
+| `--spring-k K` | Spring backbone stiffness |
+| `--unspecific` | Non-specific bonding |
+| `--denature N` | Pre-equilibration steps |
+| `--sim-seed N` | RNG seed |
+| `--prob-translate P` | Fraction of translation moves (default 1.0) |
+| `--n-neighbours N` | Lattice directions: 4 or 8 (default 4) |
+| `--boltzmann` | Enable Boltzmann validation |
+| `--enumerate-live` | Live state enumeration (required for spring backbone) |
 
 ## Model overview
 
-Each particle is a unit square on a 2D lattice. Pair interactions are computed up to distance √5:
+Each particle is a unit square on a 2D lattice. Pair interactions are computed
+up to distance √5:
 
 | Distance | Interaction |
-|----------|-------------|
-| d < 1    | Hard-core exclusion (+∞) |
-| d = 1    | Directional backbone (if set) + wD1 weak coupling |
-| d = √2   | Direction-agnostic backbone (if set) + wDsq2 weak coupling |
-| d = 2    | wD2 weak coupling only |
-| d = √5   | wDsq5 weak coupling only |
+|---|---|
+| d < 1 | Hard-core exclusion (+∞) |
+| d = 1 | Directional backbone (if set) + wD1 weak coupling |
+| d = √2 | Direction-agnostic backbone (if set) + wDsq2 weak coupling |
+| d = 2 | wD2 weak coupling only |
+| d = √5 | wDsq5 weak coupling only |
 
-Dynamics: **Virtual Move Monte Carlo** (cluster moves). Two move types:
-
-- **Translation**: cluster moves by one lattice step in a cardinal (or optionally diagonal) direction.
-- **Rotation**: cluster rotates rigidly about the seed particle by 90°, 180°, or 270°. Only multiples of 90° keep all particles on integer sites. A random neighbor is always force-included so that the rotation of a single isotropic particle (which has no effect) is never proposed. The VMMC Stokes acceptance factor for rotational drag scales as the cube of the cluster's RMS distance from the rotation center.
-
-The fraction of moves that are translations vs. rotations is set by `--prob-translate` (default 1.0 = translations only).
+VMMC move types: **translation** (one lattice step, cardinal or diagonal) and
+**rotation** (90°/180°/270° about the seed particle). The fraction of each is
+set by `--prob-translate`.
 
 ---
 
 ## Repository contents
 
-| File/Directory | Description |
-|----------------|-------------|
+| File / Directory | Description |
+|---|---|
 | `makefile` | Build system |
+| `run_nucleolus.cpp` | Nucleolus simulation driver |
+| `visualize_nucleolus.py` | Nucleolus animation and plotting script |
+| `src/NucleolusModel.h/cpp` | Gradient energy model |
 | `run_hier.cpp` | Hierarchical assembly driver |
 | `run_custom.cpp` | Custom bond driver |
 | `run_polymer.cpp` | Polymer driver |
-| `run_and_plot.py` | Python wrapper: runner, animation, Boltzmann validation |
-| `scan_assembly.py` | Parameter scan over RED bond energies and time points, producing yield curves |
-| `scan_config.ini` | Configuration file for `scan_assembly.py` |
+| `run_and_plot.py` | Python wrapper for hierarchical mode |
+| `scan_assembly.py` | Parameter scan script |
+| `scan_config.ini` | Scan configuration template |
 | `src/` | Library source and headers |
-| `input_hier.txt` | Default input file |
+| `info.txt` | PhD thesis Chapter 2 (LaTeX source) |
+| `input_hier.txt` | Default input file for `run_hier` |
 | `old/` | Deprecated files |
-
-### Input file format
-
-```
-filehead     # output file prefix
-n            # target structure size
-ncopies      # number of copies
-nsteps       # number of output steps
-nsweep       # MC sweeps per step
-density      # volume fraction
-```
-
-### Output files (gitignored)
-
-- `<filehead>_traj.txt`: particle trajectories
-- `<filehead>_stats.txt`: per-step energy and fragment-size histogram
-- `<filehead>_polymer_bonds.txt`: generated bond file (polymer mode)
-- `<filehead>_init.conf`: initial configuration (polymer mode)
-- `<filehead>_denature_bonds.txt`, `_denature_traj.txt`, `_denature_final.conf`: denaturation phase outputs
-
----
 
 ## Dependencies
 
 - C++11 compiler (`g++`)
-- Python 3 with `numpy`, `matplotlib`
+- Python 3 with `numpy` and `matplotlib`
 
 ```bash
 pip install numpy matplotlib
