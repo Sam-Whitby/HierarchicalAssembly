@@ -47,6 +47,12 @@ run_polymer: run_polymer.o $(OBJ_FILES)
 run_polymer.o: run_polymer.cpp
 	$(CXX) -c $(FLAGS) run_polymer.cpp -I$(HEADERS)
 
+run_nucleolus: run_nucleolus.o $(OBJ_FILES)
+	$(CXX) $(FLAGS) -o run_nucleolus $^ -I$(HEADERS)
+
+run_nucleolus.o: run_nucleolus.cpp
+	$(CXX) -c $(FLAGS) run_nucleolus.cpp -I$(HEADERS)
+
 clean:
 	rm -f *.o  $(OBJ_DIR)/*.o *.d $(OBJ_DIR)/*.d
 

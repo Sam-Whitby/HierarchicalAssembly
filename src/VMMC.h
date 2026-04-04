@@ -267,7 +267,8 @@ namespace vmmc
 #else
         VMMC(unsigned int, unsigned int, double*, double, double, double, double, unsigned int, double*, bool,
 #endif
-            const CallbackFunctions&, bool isLattice_ = false, int nLatticeNeighbours_ = 4);
+            const CallbackFunctions&, bool isLattice_ = false, int nLatticeNeighbours_ = 4,
+            double probSL_ = 0.0, int slN0_ = 1);
 
         //! Overloaded ++ operator. Perform a single VMMC step.
         void operator ++ (const int);
@@ -358,6 +359,12 @@ namespace vmmc
         bool isLattice;
         int nLatticeNeighbours;         //!< Number of lattice neighbours to consider (4 or 8).
         // end MHC
+
+        // Saturated-Links (SL) mode -- Holmes-Cerfon / Whitby extension
+        double probSL;                      //!< Fraction of moves that are SL moves.
+        int    slN0;                        //!< Particle-type modulus for SL (= n0, particles per complex).
+        bool   isSLMove;                    //!< Whether the current step is an SL move.
+        std::vector<bool> slTypeInCluster;  //!< Which particle types are already in the cluster.
 
         CallbackFunctions callbacks;                //!< Callback functions.
 

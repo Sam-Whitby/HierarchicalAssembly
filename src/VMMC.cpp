@@ -57,7 +57,9 @@ namespace vmmc
         bool isRepusive_,
         const CallbackFunctions& callbacks_,
         bool isLattice_,              // MHC
-        int nLatticeNeighbours_):     // MHC
+        int nLatticeNeighbours_,      // MHC
+        double probSL_,
+        int slN0_):
 
         nAttempts(0),
         nAccepts(0),
@@ -72,7 +74,10 @@ namespace vmmc
         isRepusive(isRepusive_),
         callbacks(callbacks_),
         isLattice(isLattice_),           // MHC
-        nLatticeNeighbours(nLatticeNeighbours_)  // MHC
+        nLatticeNeighbours(nLatticeNeighbours_),  // MHC
+        probSL(probSL_),
+        slN0(slN0_),
+        isSLMove(false)
     {
         // Check number of particles.
         if ((nParticles == 0) ||
@@ -214,6 +219,9 @@ namespace vmmc
         if (callbacks.boundaryCallback == nullptr) callbacks.isCustomBoundary = false;
         else callbacks.isCustomBoundary = true;
 
+        // Initialise SL type tracker.
+        if (slN0 > 1) slTypeInCluster.assign(slN0, false);
+
         std::cout << "Initialised VMMC";  // **MHC -- uncomment
 #ifdef ISOTROPIC
         //std::cout << " (isotropic)";
@@ -250,6 +258,11 @@ namespace vmmc
     {
         // Increment number of attempted moves.
         nAttempts++;
+
+        // Determine whether this step uses Saturated-Links mode.
+        isSLMove = (probSL > 0.0) && (rng() < probSL);
+        if (isSLMove && slN0 > 1)
+            std::fill(slTypeInCluster.begin(), slTypeInCluster.end(), false);
 
         // Reset number of moving particles.
         nMoving = 0;
@@ -854,6 +867,10 @@ namespace vmmc
         moveList[nMoving] = particle;
         nMoving++;
 
+        // SL: mark this particle's type as present in the cluster.
+        if (isSLMove && slN0 > 1)
+            slTypeInCluster[(int)particle % slN0] = true;
+
         // See if particle was previously participating in a frustrated link.
         if (particles[particle].isFrustrated)
         {
@@ -900,6 +917,11 @@ namespace vmmc
                     // Make sure link hasn't been tested already.
                     if (!particles[neighbour].isMoving)
                     {
+                        // SL mode: if a particle of the same type is already in the cluster,
+                        // treat this neighbour as environment (do not link it in).
+                        if (isSLMove && slN0 > 1 && slTypeInCluster[(int)neighbour % slN0])
+                            continue;
+
                         // Pre-move pair energy.
 #ifndef ISOTROPIC
                         double initialEnergy = callbacks.pairEnergyCallback(particle,

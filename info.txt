@@ -1,0 +1,601 @@
+\chapter{Towards a Model of Annealing in Spatial Gradients}
+
+
+\label{ch:Chapter 3}
+
+\section{Chapter Overview}
+
+We introduce a model that captures the kinetic frustration of protein complex assembly on a two-dimensional lattice with physically plausible dynamics. This model describes multi-particle biomolecular complexes with Gō-type interactions and follows VMMC dynamics that are adapted to give realistic temporal evolution on a lattice. The model is used to explain the enhanced kinetics that temporal changes in cellular chemistry have on the rate of assembly, providing an explanation for the conditions employed in in-vitro reconstitution protocols.  The model is then extended to consider spatially diffusing ribosomal particles within the nucleolus. The system displays enhanced assembly kinetics when a chemical gradient is present, suggesting an unexplored functional property of condensates.
+
+\section{Rugged Energy Landscape Model}
+
+To motivate the work in this chapter, we begin by setting out a simple model to illustrate how kinetic frustration could be ameliorated by the presence of a spatial chemical gradient. We consider a complex such as the ribosome that assembles through gradual diffusion of a cluster of initially denatured components from a position within the centre of a condensate, $r=0$, towards its edge at $r=L$. When the condensate maintains a radial gradient in a chemical parameter $\gamma$, the assembling cluster encounters different chemical environments, $\gamma_{r}$, as it diffuses. Assuming all components that are to be assembled are always present within the diffusing cluster, the correctly assembled structure will form at the rate that its constituents undergo internal conformational rearrangements to yield the lowest energy configuration. 
+
+We adopt a minimal model for multivalent biomolecular interaction following the oscillatory 1D potentials of rugged energy landscapes \cite{lee_scaling_2021,zwanzig_diffusion_1988}. In these models, assembly of a complex is described in terms of a single reaction coordinate $\xi$. We account for the effect that the chemical gradient has on the energy of the system by introducing a linear dependence on $\gamma_{r}$ into the model to give
+\begin{equation}
+    \label{rugged_equation2d}
+    \mathbf{E}(\xi,\gamma_{r}) = \big{(} 40(\xi^{2} - 1) + 2 \sin(200 \xi) \big{)}  \gamma_{r},
+\end{equation}
+
+which is illustrated in Figure \ref{2dpotential}. This energy landscape describes a system for which both the small rugged features and large overall bonding potential are both caused by the same types of chemical groups within the biomolecules, so that both have the same functional dependence on $\gamma$. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{2dpotential.png}
+    \caption[A two-dimensional potential landscape of energy $E$ describing a rugged reaction coordinate $\xi$ and a chemical control parameter $\gamma$]{A two-dimensional potential landscape of energy $E$ describing a rugged reaction coordinate $x$ and a chemical control parameter $\gamma$ that modules the potential following Equation \ref{rugged_equation2d}.}
+    \label{2dpotential}
+\end{figure}
+
+The global minimum of the landscape, at the reaction coordinate $x=0$, describes the correctly assembled complex, which will have its maximum, physiological internal bond strength when $\gamma=1$. We model an assembly process taking place over the landscape in which a nascent, initially mis-assembled complex diffuses radially outwards from the core of the condensate, encountering a spatial linear gradient in the chemical parameter,
+\begin{equation}
+    \gamma_{r} = \frac{\min(r,L)}{L}
+\end{equation}
+which grows from denaturing conditions at $r=0$, to the physiological state $r \ge L$ at the edge of the condensate and beyond. As the complex diffuses in space, its reaction coordinate $\xi$ will also evolve, representing the process of gradual assembly through internal rearrangement. To investigate the temporal behaviour of this model, we simulate trajectories across the energy landscape, selecting model dynamics to follow the over-damped Langevin equation
+
+\begin{equation}
+    \label{OU}
+    \begin{pmatrix}
+        \dot{\xi}(t) \\ \dot{r}(t)
+    \end{pmatrix} = -\nabla \mathbf{E}(\xi(t),\gamma_{r(t)}) + \sqrt{2 \mathbf{D}} \boldsymbol{\eta}(t),
+\end{equation}
+
+with $\nabla \mathbf{E}(\xi_{t},\gamma_{r_{t}})$ the derivative of Equation \ref{rugged_equation2d}, $\mathbf{D} = (D_{\xi},D_{r})$ the diffusion coefficients for internal reaction coordinate and radial position, and $\boldsymbol{\eta}(t) = \begin{pmatrix}
+    \eta_{\xi}(t) \\ \eta_{r}(t)
+\end{pmatrix}$ as two-dimensional Gaussian white noise for which $ \langle \eta_{i}(t),\eta_{j}(t^\prime )\rangle = \delta_{ij}\delta(t-t^\prime)$. We integrate Equation \ref{OU} using the Euler method with time-step $10^{-5}$, sampling $\eta \sim \mathcal{N}(0,1)$, and choose diffusion coefficients to describe the model system to be $(D_{\xi},D_{r}) = (0.1,1)$. 
+
+We consider different system lengths, $L$. For systems where $L$ is small, $\gamma_{r}$ steeply increases over a small distance, while there is a conversely gradual increase in system energy with $r$ for large $L$. The complex is initialised at $r = 0$, corresponding to a denatured condition where the constituent parts of the complex can freely internally diffuse across the reaction coordinate $x$, uninhibited by kinetic frustration. Average trajectories for different system length $L$ are plotted in Figure \ref{RW_Result} a) in terms of the reaction coordinate and value of $\gamma$ that the assembling complex subsequently encounters through time as it moves radially outwards. It can be observed in Figure \ref{RW_Result} b) that systems with longer, more gradual chemical gradients achieve more favourable energies over the time frame of the simulation. When $L$ is small and the chemical gradient steep, the complex rapidly diffuses to the end of the gradient to reach the physiological conditions that produce significant kinetic frustration with $\gamma=1$.
+If instead there is a gradual chemical gradient over a long distance, the initially denatured system is forced to spend considerable time in states that it can interconvert between, and diffuses across its internal reaction coordinate faster, causing faster equilibration to the assembled state. 
+
+This model suggests that spatial chemical gradients could ameliorate kinetic frustration. The improvement in kinetics is a result of the functional role of $\gamma$ in Equation \ref{2dpotential} which allows the work required to escape a kinetically trapped local minimum to be lower when $\gamma$ is small. The role of $\gamma$ is functionally identical to inverse temperature, $\beta = (k_{B}T)^{-1}$, as it simply rescales all energies. Therefore, at low values of $\gamma$, the system evolves as if it were at high temperature. When $L$ is large, this effective temperature is only allowed to decrease gradually, limited by the rate of spatial diffusion $D_{r}$. The spatial chemical gradient in this model therefore effectively presents a thermal annealing schedule for the assembling complex which resembles the optimal gradually decreasing schedules of temperature employed in metallurgy and simulations \cite{dossett_practical_2006,barzegar_optimal_2024}. 
+
+
+
+
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{C2Rugged_OU3.png}
+    \caption[Average trajectories across the rugged energy landscape with chemical gradient]{Average trajectories across the rugged energy landscape with chemical gradient. a) Average trajectories over a period $t = 2 \times10^{6}$ for systems beginning at $(x_{0},z_{0})=(-0.5,0)$ that have different gradient length $L$ integrated following Equation \ref{OU}. $(D_{x},D_{z}) = (0.1,1)$. b) The average energy of the system. c) The the average value of $\gamma$ $n=10$ repeats.}
+    \label{RW_Result}
+\end{figure}
+
+
+
+In this energy landscape model, the annealing schedule emerges from  a slow timescale of equilibration. The results resemble those presented in Figure \ref{delta_J} of Chapter \ref{ch:ch1}, which similarly showed that slower equilibration allowed production of lower energy structures. Motivated by this result, we now present a more physically detailed model for biomolecular interaction between multiple spatially resolved components. To do this we select the Virtual Move Monte-Carlo algorithm to describe a kinetic model for spatially defined biomolecules evolving on a lattice. 
+
+
+\section{The Virtual Move Monte Carlo Algorithm}
+\subsection{Ensuring Detailed Balance}
+
+The Virtual Move Monte Carlo algorithm (VMMC) will, when properly instantiated in code, follow detailed balance. Evolving a system with dynamics that observe detailed balance will, after the system is allowed to equilibrate, yield a Boltzmann distribution of states \cite{manousiouthakis_strict_1999}, as long as the dynamics are ergodic, meaning they allow the system to eventually visit all states. To check our code correctly instantiates the VMMC algorithm, it is useful to first ascertain that the Boltzmann distribution is achieved after many steps.
+
+We select a small polymer of four linked particles with normally distributed randomly chosen couplings between non-adjacent members. The couplings between particles can be either repulsive or attractive, and exist over the distances shown in Figure \ref{Matrices}. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{random_coupling_2.png}
+    \caption[Randomly generated coupling matrices]{The coupling matrices used to verify that the VMMC algorithm follows detailed balance. The matrix describes the interaction between the four particles of the polymer on left for euclidean distances on the square lattice shown above. Where coupling strengths are finite and non-zero, a normal distribution $\rho(\mu = 0,\sigma=0.5)$ is sampled from. Symmetric matrices ensure reciprocal interactions, as required for detailed balance \cite{zhang_entropy_2023}.}
+    \label{Matrices}
+\end{figure}
+
+
+This system provides many different energetic states that must be sampled between as the investigated code iteratively evolves. As the system is small, these states can be enumerated and are shown in Figure \ref{47}. The Pearson's Correlation between the Boltzmann distribution and fraction of iterations in each state is shown in Figure \ref{VMMC_vs_Boltzmann} a) as a function of the number of iterations. The final correlation after $10^{6}$ iterations is shown on the right, demonstrating a high degree of similarity between the two distributions and giving reasonable confidence that the code follows detailed balance correctly.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.75\linewidth]{47_new.png}
+    \caption[Distinguishable states of a 4-particle polymer]{The $47$ distinguishable states of the four particle system ordered from lowest to highest energy for the coupling matrices in Figure \ref{Matrices}.}
+    \label{47}
+\end{figure}
+
+However, we can not be certain that the system follows detailed balance following this method. The plots in Figure \ref{VMMC_vs_Boltzmann} b) show the result of simulations undertaken where one of the candidate directions is missing for the translation move proposal in Step 3 of the algorithm, as outlined in Chapter \ref{ch:methods}. The system in this case will therefore not obey detailed balance, as a single particle  would in some cases be unable to undergo a reverse move. Nonetheless, a high degree of correlation is still achieved between the simulated system in this case and its Boltzmann distribution. It is therefore difficult in this case to diagnose that the model fails to observe the Boltzmann distribution through this statistical correlation.
+
+It is also possible for an algorithm to produce states that are Boltzmann distributed when the underlying dynamics do not obey detailed balance \cite{manousiouthakis_strict_1999}. This situation would occur for a system with three states that inter-convert cyclically with a transition matrix
+\begin{equation}
+    \mathbf{P} = \begin{pmatrix}
+        0 & 1 & 0 \\
+        0 & 0  & 1 \\
+        1 & 0 & 0
+    \end{pmatrix}.
+\end{equation}
+
+For states with identical energies, repeated application of $\mathbf{P}$ would reach the correct equilibrium Boltzmann distribution, but describes underlying dynamics that do not observe detailed balance because transitions only occur in one direction. Because the goal in this research is to build a kinetic model of interacting particles, we must ensure that the microscopic physics of particle motion occurs reversibly as would be expected for the in-vitro physical systems studied that equilibrate passively and do not consume energy. We must therefore ensure that our code instantiates the strict condition of detailed balance. In the next section we set out a method that deterministically evaluates whether a piece of code will produce dynamics that follow detailed balance for a model system. 
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{allboltz2.png}
+    \caption[Correlation of VMMC simulations to the Boltzmann distribution]{Correlation of VMMC simulations to the Boltzmann distribution. The simulated frequencies of the 4-particle polymers in Figure \ref{47} are plotted against those expected at equilibrium by the Boltzmann equation for two sets of possible translational moves for VMMC with $\varphi_{R}$ = 0. a) Left) the Pearson's Correlation of simulations to the Boltzmann distribution as a function of the number of iterations. Red dashed line indicates $\rho^{2}=1$. Right) The relationship between simulated and Boltzmann distributed frequencies at $10^{6}$ simulated iterations, with red dashed line indicating $y=x$. In b) the absence of one type of translation move prevents the system from obeying detailed balance, but despite this a high degree of correlation can still be observed.}
+    \label{VMMC_vs_Boltzmann}
+\end{figure}
+
+
+
+\subsection{Code-Checking Method}
+
+To ensure that an algorithm instantiates dynamics that follow detailed balance, we must check whether it satisfies Kolmogorov's Reversibility Criterion \cite{kolmogoroff_zur_1936}. Kolmogorov's criterion requires that the algorithm presents transition probabilities $\mathbf{P}_{ij}$ between states $i$ and $j$ such that any closed loop satisfies \cite{kelly_reversibility_1978}
+
+\begin{equation}
+    \label{Kol}
+    \mathbf{P}_{1,2}\mathbf{P}_{2,3}\dots \mathbf{P}_{n-1,n}\mathbf{P}_{n,1} = \mathbf{P}_{1,n}\mathbf{P}_{n,n-1}\dots \mathbf{P}_{3,2}\mathbf{P}_{2,1} .
+\end{equation}
+
+An algorithm that satisfies Kolmogorov's criterion ensures that, at equilibrium, the probability of observing a transition is equal to the probability of observing it in reverse. To calculate the transition matrix, $\mathbf{P}$, we could evolve the model system following the algorithm  that is to be investigated over a large number of iterations like the simulations that were carried out in Figure \ref{VMMC_vs_Boltzmann}. The resulting sequence in which states are visited could be used to estimate the average transition probabilities. However, this is also a statistical method that may not converge rapidly, as it will be numerically imprecise for transitions that occur rarely. We therefore propose a method that deterministically evaluates the transition matrix $\mathbf{P}$ for a model system.
+
+Our proposed method consists of forcing the investigated code to perform all actions that it could take. By aggregating the probabilities that each path from state $i$ to $j$ occurs, the element $\mathbf{P}_{ij}$ of the transition matrix can be computed exactly. In order to allow this controlled, deterministic execution, the investigated code must be compiled so that whenever a randomly sampled number, $r \sim \mathcal{U}(0,1)$ is required during execution in order to decide between a pair of outcomes, a binary bit ($0$ or $1$) is instead supplied. The binary bit determines which path is taken, regardless of the actual probability of the outcome occurring within the code and therefore ensuring that every possible computational path is enumerated exactly once.
+
+We choose the $N = 4$ particle model that was previously considered, with the coupling parameters shown in Figure \ref{Matrices}. The initial arrangement of particles on the lattice, $\mu$ is chosen arbitrarily as one of the states in Figure \ref{47}. The only input that the code now requires to perform an iteration is a sequence of supplied bits that determine the decisions that it should take wherever random numbers require generating. We re-iterate the VMMC algorithm that was laid out in Chapter \ref{ch:methods}, with annotations in red detailing the number of input bits a particular step requires, corresponding to the quantity of information that must be provided by randomly generating numbers during run-time. By consuming a bit, the algorithm chooses between two possible paths during run-time, and these annotations highlight the decision-points within the code that collectively lead to the vast range of diverging outcomes obtainable from a single initial state through VMMC.  
+
+
+\begin{ProblemSpecBox}{Virtual Move Monte-Carlo Algorithm}
+  \label{VMMC}
+    \begin{enumerate}
+  \item Choose a particle $i$ from the lattice at random. Initialise the proposed cluster $\mathbf{C} = \{i\}$ and linking matrix $\mathbf{L}_{i,j} = 0, \ \forall  \ i,j$. \textcolor{red}{$\lceil \log_{2}(N=4)\rceil = 2 \ \text{bits}$}
+    \item Select the move-type by generating a uniformly distributed random number $r_{0} \in [0,1]$. If $\varphi_{R} > r_{0}$ the move-type is a \textit{translation}, otherwise it is a \textit{rotation}. \textcolor{red}{$1\ \text{bit}$}
+    \item 
+    \begin{algorithmic}
+        \IF{\textit{translation}}
+            \STATE At random select the vector to one of the nearest neighbouring $8$ lattice sites
+            
+            $\mathbf{v} \in \{(1,0),(1,1),(1,-1),(0,-1),(0,1),(-1,1),(-1,-1),(-1,0) \}$, 
+            
+            so that the proposed translation of a particle $i$ follows 
+    
+        $\mathbf{x}_{i^{\prime}} = \mathbf{x}_{i} + \mathbf{v}$
+        
+        \textcolor{red}{$3\ \text{bits}$}
+        \ELSE
+            \STATE A \textit{rotation} is proposed. Select a point of rotation $\mathbf{c} = 
+    \mathbf{x}_{i} + 
+    \mathbf{v}_{r}$ with $\mathbf{v}_{r}$ randomly chosen from the four lattice midpoints surrounding $\mathbf{x}_{i}$,
+    
+        $\mathbf{v}_{r} \in 
+       \bigg{\{}\big{(}\frac{1}{2},\frac{1}{2}\big{)},\big{(}-\frac{1}{2},\frac{1}{2}\big{)},\big{(}\frac{1}{2},-\frac{1}{2}\big{)},\big{(}-\frac{1}{2},-\frac{1}{2}\big{)} \bigg{\}}$, 
+       
+       and an angle randomly selected from 
+       
+       $\theta \in \{+90^\circ, -90^\circ \}$. 
+       
+       The rotation of a particle $i$ moves it to
+
+$\mathbf{x}_{i^\prime} =  \mathbf{c}  + \mathbf{R}_{\theta}\cdot \bigg{(} (\mathbf{x}_{i} - \mathbf{c})  - L \bigg{\lfloor} \frac{\mathbf{x}_{i} - \mathbf{c}}{L} - \frac{1}{2} \bigg{\rfloor} \bigg{)}, \ \ \  \mathbf{R}_{\theta} = 
+    \begin{pmatrix}
+        \cos(\theta) & \sin(\theta) \\
+        -\sin(\theta) & \cos(\theta)
+    \end{pmatrix}.$
+
+        \textcolor{red}{$3\ \text{bits}$}
+        \ENDIF
+    \end{algorithmic}
+  \item 
+   Generate the set of all particles $\{ N_{i} \}$ that contains members $j$ for which $ \mathbf{L}_{i,j} = 0$ and $j \not\in \mathbf{C}$. If $\{ N_{i} \} = \emptyset $, select a new particle $l \in \mathbf{C}$ for which $\{N_{l} \} \neq \emptyset$. If no such particle, $l$ exists, all links have been attempted: Proceed to Step 7. \textcolor{red}{$0\ \text{bits}$}
+   \item
+   Choose a particle $j \in \{ N_{i} \}$. \textcolor{red}{$0\ \text{bits}$}
+   
+  \item Compute the probabilities
+
+  $p_{ij}(\mu \to \nu) = \max \bigg{(} 0,\ \ 1 - \exp \big{(}-\beta(J_{i^\prime,j} - J_{i,j}) \big{)} \bigg{)}$
+
+  $p_{ij}(\nu \to \mu) = \max \bigg{(} 0,\ \ 1 - \exp \big{(}-\beta(J_{i,j^\prime} - J_{i^\prime,j^\prime}) \big{)} \bigg{)}$,
+  
+  $p_{rev} = \min \bigg{(}1,\frac{p_{ij}(\nu \to \mu)}{p_{ij}(\mu \to \nu)} \bigg{)}$,
+
+    with the positions $\mathbf{x}_{i{^\prime}}$ and $\mathbf{x}_{j^\prime}$ given by the appropriate expression in Step 3 depending on whether the move-type is a \textit{translation} or \textit{rotation}. Generate two uniformly distributed random numbers $r_{1},r_{2} \in [0,1]$. Perform the following updates
+
+     $ \begin{cases}
+        \mathbf{C} \to \mathbf{C}\cup j,\  i = j, & \text{if} \ \  r_{1} < \ 1 - p_{ij}(\mu \to \nu) \  \text{and} \ \  r_{2} < p_{rev} \\
+
+     \mathbf{L}_{ij}=\mathbf{L}_{ji} = -1, & \text{if} \ \ r_{1} < \ 1 - p_{ij}(\mu \to \nu) \  \text{and} \   r_{2} \ge p_{rev} \\
+     
+          \mathbf{L}_{ij}=\mathbf{L}_{ji} = 1 , & \text{if} \ \  r_{1} \ge \ 1 - p_{ij}(\mu \to \nu) 
+           
+           
+    \end{cases}$
+
+    Return to step $4$.
+
+    \textcolor{red}{$2\ \text{bits}$}
+    
+
+    \item Accept the translation of particles $i \in \mathbf{C}$ by the vector $\mathbf{v}$ with probability 
+    
+    $p_{accept} = \prod_{L_{ij =0}} e^{-\beta J_{i,j}}\sum_{i,j} \delta (\mathbf{L}_{ij} + 1)$
+    \textcolor{red}{$0\ \text{bits}$}
+    
+\end{enumerate}
+\end{ProblemSpecBox}
+
+The number of bits required for a step is the number of binary decisions that have to be made to determine the outcome of the step. Despite decisions being made, no information needs to be supplied in Steps $4$ and $5$ because ordered lists that  are deterministically constructed can be used without altering the algorithm. This results from the fact that all links are attempted, so the order is not consequential, and also means that  $L_{ij} \neq 0  \ \forall \  i,j$ in Step 7, so $p_{accept} = 0 \ \text{or}\  1$ which requires no additional input to evaluate. 
+
+The VMMC algorithm does not have a fixed runtime because it cycles between Steps 3, 4 and 5 until all viable links have been suggested, which depends on the initial state of the system, $\mu$, and the particular input bits so far that it has received. Therefore the length of bit sequences that must be tried to enumerate all eventualities cannot be predicted a priori. We can manage this situation by updating the list of inputs dynamically at each iteration. On the first iteration of the algorithm, any bits that are required are set to $1$. Following the iteration, another input bit sequence is generated which differs only in the last bit, and will therefore constitute a valid, unexplored path that the system could traverse. When this pair of sequences has been run, we repeat the bit flip at the penultimate position, truncating the remaining sequence and supplying a $1$ where more bits are required at later steps. This process is repeated, working progressively backwards to the initial state. When all decision points have been both accepted and rejected within the tree, we are left with a binary tree that contains all possible paths the system can take from the initial state, $\mu$. Labelling $B_{i}(\mu \to \nu)$ the path $i$ that connects $\mu$ to final state $\nu$, the average probability $p_{i}(\mu \to \nu)$ that this path would have occurred when the code used random numbers is found by calculating the product of the expected probabilities $p_{ij}$ of successive decisions $j$ along the path
+
+\begin{equation}
+    p_{i}(\mu \to \nu) = \prod_{j \in path} p_{ij}\ \ .
+\end{equation}
+
+A tree of paths that occur from a particular initial state, $\mu=13$ from Figure \ref{47} is shown in Figure \ref{VMMC_Tree} for the VMMC algorithm with the $4$ particle model evolving with just translation moves, $\varphi_{R} = 0$, and energies from Figure \ref{Matrices}. Only paths that lead to a change in state are plotted, omitting failed moves as well as successful moves that cause collective motion of the entire structure for clarity. The starting state is at the root of the tree at the top, and the initial particle and direction that get selected for the virtual move are shown immediately below. The resulting state of the system is shown as leaves of the tree. Intermediate nodes are the decision points that are determined by input bits, with acceptance or rejection depicted by the edge out of the node being coloured red or blue respectively. 
+
+
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Computational_Graph_Oct.png}
+    \caption[Illustration of the possible computational routes taken during a single iteration of the VMMC algorithm]{Diagram of all possible computational routes taken during a single iteration of the VMMC algorithm beginning at the state shown at the root of the tree, top. Following the random generation of a particle to move and the vector to move it through, shown at the second level of the tree, a sequence of binary decisions are made during the algorithm. Blue arrows denote FALSE and red TRUE. The final states of the system are shown as leaves of the tree. Only sets of decisions that leave the system in a distinct state are displayed.}
+    \label{VMMC_Tree}
+\end{figure}
+
+The set of final states that the tree produces are fed back into the algorithm as the starting state of new trees to produce more states. The process is repeated until no more states are left to be tested. Running the code-checking algorithm results in a set of paths that includes all paths on all generated trees and describes everything that could happen when the code is run for the system and model parameters studied. If the algorithm is ergodic, all states that are reachable from the starting state are generated, which is verified by the fact that all $47$ states in Figure \ref{47} are observed in the course of carrying out the code checking method.
+
+To verify the code obeys detailed balance, the transition matrix, $\mathbf{P}$, can be assembled with entries $\mathbf{P}_{\mu,\nu} = \langle p_{i}(\mu \to \nu)\ \rangle_i$ for states $\mu$ and $\nu$. This is the average accumulated probability over all successful paths that connects $\mu\to \nu$, representing the exact expected probability that a transition would occur if random numbers were used.  $\mathbf{P}$ characterises the behaviour of the algorithm as instantiated by the code to be checked. As we have enumerated all states of the system in Figure \ref{47}, we can verify that $\mathbf{P}$ describes detailed balance simply by comparing the ratio of non-zero symmetric elements $\mathbf{N}_{xy} = \min(1,\mathbf{P}_{xy}/\mathbf{P}_{yx})$ to the Boltzmann factor, $\exp(-\beta (E_{\mu} - E_{\nu}))$. The transition matrix that was generated from the code-checking method, $\mathbf{P}$, is shown in Figure \ref{DBmat} along with a matrix of Boltzmann factors, $p(\mu \to \nu) = \frac{g(\nu)}{g(\mu)}e^{-\beta(E_{\nu} - E_{\mu})}$ that has been filled in wherever there are non-zero values in $\mathbf{P}$, meaning transitions are possible with VMMC. The maximum discrepancy between elements of the matrices is $< 10^{-15}$. Therefore, with the uncertainty of this floating-point precision, it can be concluded that the code as written obeys detailed balance.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{Matricies_Check.png}
+    \caption[Comparing the simulated transition matrix with code-checking method to the Boltzmann distribution]{Comparing the simulated transition matrix with code-checking method to the Boltzmann distribution. Left: the transition matrix $\mathbf{P}$ generated by the code checking method. Centre: $\mathbf{P}$ after dividing through diagonal elements. Right: Boltzmann factors at the non-zero positions of $\mathbf{P}$. The states are sorted so that $1$ has the lowest (most favourable) energy and $47$ the highest energy, corresponding to the order in Figure \ref{47}. The discrepancy between the transition matrix generated by the coded VMMC algorithm in this Chapter, and the Boltzmann factor is within floating point precision.}
+    \label{DBmat}
+\end{figure}
+
+
+Where the Boltzmann distribution of states is not known, $\mathbf{P}$ is verified to observe detailed balance using Kolmogorov's criterion, Equation \ref{Kol}. Though a transition matrix can have a vast number of closed loops, it suffices to determine whether it can be made symmetric \cite{levin_markov_2017} which is efficiently done with the algorithm presented in \cite{brill_reversibility_2018}. 
+
+The full enumeration of all computational paths required $\sim 30,000$ iterations for this model system, which is a small fraction of the number of iterations required for the simulated distribution to satisfactorily converge to the Boltzmann distribution in Figure \ref{VMMC_vs_Boltzmann}. The efficiency of this method is a function of the average number of bits required by a single iteration of the algorithm that is to be investigated, which makes it suitable for lattice models that do not have continuous degrees of freedom. For continuous systems, either a discrete clustering of possible states would be necessary, or a partial construction and analysis of the transition matrix could be undertaken. This code-checking method is utilised to verify that the adjusted versions of the VMMC algorithm presented in subsequent sections of this chapter also follow detailed balance.
+
+
+
+\section{A Gō model Multi-Particle Complex}
+
+
+To account for the properties of biomolecular complexes, a model should consist of multiple entities that self-assemble into a thermodynamically favoured and geometrically defined structure \cite{sartori_lessons_2020,appasamy_annotating_2023}. The assembling components of biomolecular complexes are flexible heteropolymers \cite{marsh_protein_2014} such as nucleic acids and proteins that when assembled form a compact structure with a density similar to that of single globular proteins \cite{gaines_comparing_2018}.
+
+We construct a model target biomolecular complex, $\mathbf{T}$, with the $n=2$ order Moore curve partitioned into $4$ separate units, as shown in Figure \ref{target}. Each component is buried within the complex to a similar degree, capturing the modular arrangement of biomolecules in complexes such as the ribosome \cite{sanghai_modular_2018} which precludes the requirement for a strict ordered sequence of assembly that spirals produce \cite{zenk_assembly_2014}. $\mathbf{T}$ consists of $4$ biopolymers which each contain $4$ segments that could represent numerous underlying monomer units in a freely-jointed chain \cite{flory_statistical_1969}. The covalent bonding along the backbone of a unit is treated as infinitely strong, causing segments to remain connected at all times. By allowing the backbone strength to exist at distances of both $1$ and $\sqrt{2}$, contiguous segments within a polymer may adopt positions on any of the $4$ neighbouring and $4$ second nearest neighbouring lattice sites, which allows units to adopt a range of flexible shapes. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.75\linewidth]{target_3.png}
+    \caption[A model target complex for testing assembly protocols]{A model target complex, $\mathbf{T}$, with $i = 1,...,4$ proteins shown in different colours, each with segments $i_{n} = i_{1},...i_{4}$ that are connected by contiguous unbreakable backbones. Non-zero couplings are shown with black and grey dashed lines between neighbours and second nearest neighbours respectively.}
+    \label{target}
+\end{figure}
+
+
+A Gō model is employed to describe specific attractive interactions between neighbouring units \cite{taketomi_studies_1975} through assigning a positive coupling constant for pairs of particles that are neighbours or nearest neighbours in $\mathbf{T}$,
+
+\begin{equation}
+\label{J_Go}
+J_{i_{n},j_{m}} = 
+\begin{cases}
+\begin{aligned}
+    J,& \ \ \ \text{if} \ \ \ j_{m} \in \mathcal{N}_{\mathbf{T}}(i_{n}) \\
+    0,& \ \ \  \text{otherwise},
+\end{aligned}
+\end{cases}   
+\end{equation}
+
+where $\mathcal{N}_{\mathbf{T}}(i_{n})$ is the set of nearest and second nearest neighbours of particle $i_{n}$ in $\mathbf{T}$ so that following Figure \ref{target} we would get $\mathcal{N}_{\mathbf{T}}(3_{4}) = \{ 1_{4}, 1_{3}, 1_{2}, 4_{4}, 3_{3}\}$, for example. The hydrophobic interactions that are also important in biomolecule complexes \cite{sun_hydrophobic_2022} are incorporated into the Gō model implicitly as favourable interactions between biopolymers, similar to the approach taken in Chapter \ref{ch:ch1}. For the model to describe the local attractive forces between biomolecules, we let coupling strengths decrease with the distance between particles $d = \vert\mathbf{x}_{i_{n}} - \mathbf{x}_{j_{m}}\vert$,
+
+
+\begin{equation}
+\label{total_eq}
+J_{i_{n}j_{m}}(d) =
+ \begin{cases}
+ \begin{aligned}
+ -\infty,&  \ \ \ \text{if} \ \ \ d = 0 \ \ \  \text{or} \ \ \ \big{(} (d \geq 2) \ \text{and} \ (i=j)   \ \text{and} \ (\vert n-m| = 1)  \big{)}\\
+   J_{i_{n}j_{m}},& \ \ \ \text{if} \ \ \ d= 1   \\ 
+ \epsilon J_{i_{n}j_{m}},& \ \ \ \text{if} \ \ \ d= \sqrt2\\
+ 0,& \ \ \ \text{otherwise,}
+  \end{aligned} 
+ \end{cases}
+ \end{equation}
+
+ 
+
+with the value $\epsilon < 1$ describing the reduction in bonding experienced between lattice sites that are located a distance $d=\sqrt2$ away compared to those at $d=1$, while the interaction at $d > \sqrt{2}$ is treated as negligible. Both hard-core repulsions and the covalent backbone bonds are enforced by setting  appropriate coupling strengths to $-\infty$ to describe infinitely strong repulsion when particles either overlap or backbones are broken. Bonds are permitted only between different polymers $i \neq j$, meaning a free polymeric unit will be fully flexible and only induced to adopt a particular conformation upon binding to other entities.  The corresponding coupling matrix for $\mathbf{T}$ is shown in Figure \ref{Single_Coupling_Matrix}. The total energy of a system with lattice configuration $\xi$ is found by summing over the coupling strengths between all  pairs of particles $(i_{n}$,$j_{m})$
+
+\begin{equation}
+\label{Coupling_Conditions}
+E ( \xi) = -\sum_{ \{  
+i_{n},
+j_{m}
+\} \in \xi }
+J_{i_{n}
+j_{m}}(d=\vert\mathbf{x}_{i_{n}} - \mathbf{x}_{j_{m}}\vert).
+ \end{equation}
+
+By including all and only the specific interactions in $\mathbf{T}$ in Equation \ref{Coupling_Conditions}, we ensure that the lowest energy structure for a system containing one of each type of constituent polymer will contain every bond in $\mathbf{T}$. The lowest energy structure exists alongside those generated by taking $\mathbf{T}$ and reflecting or rotating by $90^{\circ}$, as these operations conserve the total energy. At thermodynamic equilibrium, a structure with binding strength $J$ and $0 \le \epsilon \le1$ will exist on an $L\times L$ lattice following the Boltzmann distribution. To imitate real biomolecular complexes, we should aim for a set of parameters where the correctly assembled structure dominates at equilibrium, but where thermal fluctuations are relevant and frequently cause bonds to temporarily break and re-form \cite{marsh_structure_2015}. 
+
+Because we are interested in understanding the kinetics of complex assembly, we require a Monte-Carlo model that suggests physically plausible local moves. We begin by showing assembly of the system under the Kawasaki dynamics used in Chapter \ref{ch:ch1}, and reveal its inadequacies for this polymeric system.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{F215_2.png}
+    \caption[Model coupling matrices for multiple polymers with attractive interactions]{Model coupling matrices for multiple polymers with attractive interactions. Matrices of coupling strengths for $\mathbf{T}$ shown in Figure \ref{target} for the possible inter-particle distances $d = \vert\mathbf{x}_{i_{n}} - \mathbf{x}_{j_{m}}\vert$ that can occur on a two-dimensional lattice. The $16$ different types of particle that the matrices refer to are shown along edges of the $d=0$ matrix, and attractive interaction strengths with $J > 0$ correspond to adjacent sites within $\mathbf{T}$.}
+    \label{Single_Coupling_Matrix}
+\end{figure}
+
+
+\subsection{Kawasaki Kinetics}
+
+The Kawasaki algorithm that was used in Chapter \ref{ch:ch1} is extended to propose swaps between any lattice sites that are neighbours or nearest neighbours. The algorithm becomes:
+
+\begin{ProblemSpecBox}{Kawasaki Algorithm}
+  \label{Kawasaki8}
+    \begin{enumerate}
+    \item
+    A particle $i$ is chosen at random from the lattice in state $\xi$.
+    \item 
+    One of the $8$ nearest-neighbouring lattice sites of $i$, which we call $i^{\prime}$ is selected at random. This can be a particle or empty. 
+    \item 
+    A state in which $i$ and $i^{\prime}$ have been swapped is proposed and accepted following the $p^{accept}$ in Equation \ref{Detailed_Balance}.
+\end{enumerate}
+\end{ProblemSpecBox}
+
+
+An $11 \times 11$ lattice was initialised with a single copy of $\mathbf{T}$. We initially investigate a system with coupling strengths $J_{ij} = J = 5, \epsilon=0$, giving $12$ specific bonds between only neighbouring segments. The non-backbone bonds are  broken by setting $J=0$ and evolving the system. By periodically switching between $J=5$ and $J=0$, the assembly kinetics can be explored. In Figure \ref{Kawasaki_Ruggedness}, an initially fully-formed $\mathbf{T}$ exists stably over a period of $10^{5}$ iterations with minor fluctuations. After disassembly, in this simulation the complex reformed from its monomer constituents, regaining all bonds. However, the presence of kinetic traps prevented this global minimum ground-state from being reached in subsequent periods of assembly from constituents. In these cases, after $10^{5}$ iterations the system is found as unsaturated aggregates that contain a partial fraction of the bonds in $\mathbf{T}$.
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{F22_2.png}
+    \caption[Complex assembly under Kawasaki kinetics]{Complex assembly under Kawasaki kinetics. Top: snapshots of the lattice taken at the times marked. Second panel: the energy of the system along with the temperature phases applied during simulation. Third panel: distances of the average position of each polymer from the origin $R_0(t) = \vert \langle \mathbf{x}_{i_{n}}(t) \rangle_{n} \vert$. The unit cells shown at the top have been translated to facilitate visualisation of structures so no longer correspond to the plotted distances from the origin. Lowest panel: the fraction of proposed swaps that are accepted.}
+    \label{Kawasaki_Ruggedness}
+\end{figure}
+
+Despite the fact that bonding in $\mathbf{T}$ is entirely specific, with the structure existing at equilibrium when $J=5$ with high probability, the Kawasaki move selection shows frustrated dynamics and the system fails to assemble in reasonable amounts of time. The reason for this kinetic frustration is that compact components with multiple bonds have greatly impeded diffusion, which is particularly prominent for the fully formed $\mathbf{T}$ that, as observable in the third panel, does not change position on the lattice over $10^{5}$ iterations. A similar immobility can be observed for partially formed structures during assembly.  The reason that Kawasaki dynamics causes this effect is that the only swap moves that exist for compact structures are single particle moves that involve bond-breaking. This means that for a whole structure to diffuse, multiple bonds within it must first break, which occurs with a probability that becomes exponentially small as their strength increases. This source of frustration does not map to the physical picture, as real biomolecular complexes can diffuse around to further interact without needing to break internal bonds. To remedy this situation, moves must be proposed that translate multiple particles in concert, undergoing collective motion. In order to achieve this, we employ the Virtual Move Monte-Carlo method that we previously outlined at the beginning of this chapter.
+
+
+\subsection{VMMC Kinetics}
+
+The intended benefit of using VMMC is that multiple particles can move in concert, alleviating a major source of unphysical kinetic frustration. We take the model for complex assembly presented in Figure \ref{Single_Coupling_Matrix} that failed to produce realistic kinetics with the Kawasaki method as observed in Figure \ref{Kawasaki_Ruggedness}. Simulating the system with the VMMC algorithm, Figure \ref{Kawasaki_vs_VMMC}, the fully assembled complex $\mathbf{T}$ is found to be mobile, diffusing around the lattice when it has strong internal binding $J=5$. Assembly of the complex and its equivalent rotated and mirror-image isomers can be observed in subsequent periods from the separate components. A degree of kinetic frustration still exists for the system, as displayed by the long-lived partially assembled aggregate formed in the last $J=5$ phase. The monomers in the last phase experience significantly slower diffusion than they do in either the complex or when free. Static periods can also be observed for the monomers at the beginning of other periods of $J=5$ where they begin to interact. During these periods, there is a lower fraction of successful VMMC moves. The reason for rejection of moves in this specific and strongly bonded model system is universally the presence of frustration, as accounted for by the $\delta(f)$ term of step 7 of the algorithm. Frustration occurs because the bonds of strength $J=5$ form links with a probability $1 - e^{-5} \sim 99.3 \%$ so that in almost all cases strong bonds are preserved but, as the reverse move would not be suggested, the forward move has to be rejected. This reveals a limitation of using the VMMC algorithm to study kinetics: time can not be straight-forwardly mapped to the number of iterations that the system has undergone. However, it should still be possible to compare the speed that a single system evolves on average to situations where coupling strengths or temporal schedules are altered, and use this as a qualitative tool to understand assembly kinetics.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{F28.png}
+    \caption[Complex assembly under VMMC kinetics]{Complex assembly under VMMC kinetics. Top: snapshots of the lattice taken at the times marked. Second panel: the energy of the system along with the temperature phases applied during simulation. Third panel: distances of the average position of each polymer from the origin $R_0(t) = \vert \langle \mathbf{x}_{i_{n}}(t) \rangle_{n} \vert$. The unit cells shown at the top have been translated to facilitate visualisation of structures so no longer correspond to the plotted distances from the origin. Lowest panel: the fraction of proposed swaps that are accepted.}
+    \label{Kawasaki_vs_VMMC}
+\end{figure}
+
+
+In this chapter we are primarily interested in the regime of biomolecule interactions where diffusion of free particles is much faster than bond rearrangement \cite{lee_scaling_2021}. In this regime, entities that are free from frustration with their surrounding environment are imagined to move rapidly, while individual bonds that must break and re-form to generate correct structures determine the rate that complexes form. Therefore, it is unnecessary to evoke accurately scaling diffusion coefficients, as was considered in Chapter \ref{ch:methods}. We instead choose the most efficient scheme for computation in Figure \ref{Ndiffusion} with $p_{C} = 1$ so that all viable cluster moves are accepted. 
+
+
+\subsection{Simultaneous Assembly of Multiple Copies}
+The interactions between monomer units in the target complex $\mathbf{T}$ are, following the Gō model, specific to particular pairs of particles $i,j$ and distances within $\mathbf{T}$ as given in Figure \ref{Single_Coupling_Matrix}. For simulations of the single complex $\mathbf{T}$ featuring $4$ polymeric units with all bond strengths $J=5$, Figure \ref{Kawasaki_vs_VMMC}, the lowest energy state must be the formed complex as it has every possible bond present. When multiple copies of $\mathbf{T}$ exist on the lattice, however, lower energy aggregates can form. This can be seen for the example structure in Figure \ref{Aggregate}, were six additional bonds are present that form between the structures, creating an extended aggregate. The model is not strictly a Gō model now, as bonds are not fully specific, reflecting the real frustration encountered during biomolecular assembly \cite{takada_go_2019}. As the polymeric system with a complex structure of inter-particle couplings constitutes a spin-glass, there is not a straight-forward method of determining the lowest energy state of this system with multiple copies \cite{barahona_computational_1982}. Therefore, a regime must be empirically selected where bonding within the target is sufficiently strong that the lowest energy state consists of multiple free copies of $\mathbf{T}$.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.5\linewidth]{Multi_Complex.png}
+    \caption[An example of an extend aggregate]{An example of an extended aggregate consisting of four units of $\mathbf{T}$ showing six additional bonds when only attractive interactions exist.}
+    \label{Aggregate}
+\end{figure}
+
+Aggregates between complexes occur in this model because each particle can form multiple versions of the same bond with coupling depending only on whether particles are neighbouring, and there existing sufficient space around some particles for this to occur. A more realistic model for self assembling biopolymers should account for the fact that their units can interact through specific bonding sites in real systems. For nucleic acids and some proteins like antibodies, this is because of domains in the polymer backbone that feature sequences of complementary chemical groups so that, when brought together they form a strong, exclusive bond so that the number of domains available will limit how many and what type of bonds each unit can form. This approach has been treated through patchy particle models in which particles have a defined and limited number of specific bonding regions \cite{wilber_reversible_2007}. Specifying a single patch for every bond in $\mathbf{T}$ would describe a system that forms unaggregated free complexes, with surfaces that have saturated bonds that do not further react. To include patchiness, each particle $i$ must, in addition to its location on the lattice, also carry a specification of which of its surrounding particles it is bonded to at time $t$, $\sigma_{i}(t) = \{ j,k\dots  \}$. Proposed VMMC moves must observe this additional degree of freedom in order to maintain detailed balance. 
+
+Another way to ensure multiple copies of $\mathbf{T}$ do not assemble into thermodynamically favourable aggregates is to add repulsive interactions between otherwise non-bonding units. This approach is straightforward because it does not require changes to the lattice VMMC method, and no additional degrees of freedom are needed, allowing just the position of particles on the lattice to constitute a full description of the system. We choose to implement this long-range repulsion method by including interactions between particles $i_{n}$ and $j_{m}$ if $i$ and $j$ are different instances of the same type of polymer but on different backbones. To eliminate the propensity to aggregate seen in Figure \ref{Aggregate}, it suffices to introduce these repulsive terms up to a distance $d=2$ with a decaying, distance-dependent magnitude. As before, the coupling between particles $J_{i_{n},j_{m}}$ is described by the Gō model in Equation \ref{J_Go} and the coupling strengths are now written to include the repulsive interactions to give
+
+ 
+ \begin{equation}
+\label{repulsive_total_eq2}
+J_{i_{n}j_{m}}(d) =
+ \begin{cases}
+ \begin{aligned}
+ -\infty,&    \ \ \ \text{if} \ \ \ d = 0  \ \ \ \text{or} \ \ \  \big{(} (d \geq 2) \ \text{and} \ (i=j)   \ \text{and} \ (\vert n-m| = 1)  \big{)}\\
+  (1-2\delta_{ij}) J_{i_{n}j_{m}},&  \ \ \ \text{if} \ \ \   d= 1&   \\ 
+ (\epsilon - (1+\epsilon)\delta_{ij}) J_{i_{n}j_{m}},&  \ \ \ \text{if} \ \ \ d= \sqrt2\\
+ -\epsilon\delta_{ij} J_{i_{n}j_{m}},& \ \ \ \text{if} \ \ \ d= 2&\\ 
+ 0,& \ \ \    \text{otherwise,}
+  \end{aligned} 
+ \end{cases}
+ \end{equation}
+
+ 
+
+The energies in Equation \ref{repulsive_total_eq2} correspond to a matrix where particles are linked within the same polymeric unit, $i=j$, and one where they are on different units. These matrices are visualised in Figure \ref{CouplingMatrix}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{F215.png}
+    \caption[Model coupling matrices for multiple polymers with attractive and repulsive interactions]{The coupling matrices for the mixture of short-range attractive and long-range repulsive interactions in $\mathbf{T}$. a) The coupling between any polymer and itself, as a function of the distance between units,  $d$, showing hard-core repulsions and strong covalent backbone bonds b) The coupling between different polymer units that have distinct backbones, showing both attractive and repulsive interactions.}
+    \label{CouplingMatrix}
+\end{figure}
+
+
+We select values of $J=8$ and $\epsilon=0.5$ to represent inter-particle bonds, which approximates the inter-residue binding energies in real proteins of $\sim 1 - 10 k_{B}T$ \cite{kamisaka_statistical_2024,deiana_amino_2010}. This treats each particle as an ensemble of residues that contain charges, hydrogen-bonds or hydrophobic interactions, such that strong bonds exist between correctly aligned members and they become compact assembled complexes. However, as bonds are weakened by repulsive interactions, this set of interaction strengths do enable mis-assembled complexes to slowly evolve, describing frustrated kinetics over a rugged energy landscape with features of many different heights. 
+
+
+The simulation results are shown in Figure \ref{gVMMC_Comp}. With the addition of these repulsive interactions, complexes that are initially non-interacting freely diffuse without forming an aggregate for the VMMC algorithm with $\varphi_{R} = 0.2$, as the long-range repulsions make it less favourable for complexes to be adjacent. If the system is initiated as the aggregate from Figure \ref{Aggregate}, these repulsions indeed cause it to have a higher energy. 
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{gVMMC_Comp4.png}
+    \caption[Evolution of system under VMMC with attractive and repulsive interactions]{Evolution of the system following VMMC moves with $\varphi_{R} = 0.2$ for the two initial states shown by the grey and black frames with corresponding coloured traces for the system energy vs ground state over $1000$ iterations. Snapshots of the systems are displayed at the indicated time-points. Grey dashed line is for a system beginning in the higher energy state but following dynamics with the addition of a fraction $\varphi_{SL}=0.2$ of saturated link moves.}
+    \label{gVMMC_Comp}
+\end{figure}
+
+However, despite the introduction of long-range repulsion to prevent aggregation, the higher energy aggregate does not break apart as intended into individual complexes over the course of $1000$ iterations, remaining in its local minimum intermediate state that diffuses or rotates in entirety. The source of kinetic frustration within these dynamics is the VMMC algorithm, which in the version of the method described does not frequently suggest moves that would break the aggregate apart. This situation represents a departure from the expected physical picture, where non-interacting entities, or in this case overall repulsive complexes, would not be anticipated to stay together over time. We first identify the source of this issue of VMMC for a minimal $1D$ system before suggesting ways that it can be alleviated.
+
+In the VMMC algorithm, links are made that depend on the pairwise energy between particles, meaning that a cluster of particles that feature strong pairwise interactions will remain together even if unfavourable longer-range repulsive interactions exist. We can demonstrate this in the simple $1D$ system of three particles that is shown in Figure \ref{gVMMC}. The distinguishable microstates that can be reached by a VMMC move are shown at the bottom of the figure, and consist of states where the ensemble has been separated into two sections. If we choose coupling strengths of $-3J$ for long-range repulsion and $+J$ for the short-range attraction between particles at the specific distances shown, a situation is produced in which all reachable microstates at the bottom of the diagram have lower energies than the initial compact ensemble. We should therefore expect VMMC moves to generate these structures with reasonable kinetics from the initial state. 
+
+
+For large $J$ however, following the VMMC algorithm each particle in turn will become sequentially linked to neighbouring particles in the growing cluster to which it has strong short-range attraction. The chance of linking, $p_{link} \sim 1 - e^{-\beta J}$, becomes highly probable as $J$ becomes large. If, following the conventional VMMC algorithm, any cluster size is permitted to grow, $|C|_{(max)} = \infty$, all particles will therefore move together in concert. To reach the more energetically favourable microstates, a link must fail to form, which occurs with a probability $\sim e^{-\beta J}$. The steps in Figure \ref{gVMMC} where the move probability will be of this negligible magnitude are shown with dashed lines, and the computational paths that occur with the conventional VMMC algorithm are shown on the left-hand side. As all paths from the starting state feature at least one of these low probability decision-points, the system will remain trapped in a local minimum. On long enough time-scales, all states will still be populated according to their total energies, as fulfilled by detailed balance, because the reverse moves will also have a low probability of occurring. However, the slow kinetics that would result from the VMMC algorithm provide an unphysical picture of the kinetics of interacting polymers, similar to how the lack of cluster diffusion is kinetically inadequate for Kawasaki dynamics. 
+
+The issue can be resolved when the maximum size of clusters that are considered for moves is limited, which can be achieved by monitoring the size of the cluster during the process of linking particles, and terminating the process once a certain cluster size has been reached. At each iteration, the maximum cluster size can be randomly chosen with $|{C}|_{(max)} = \lceil \xi^{-1} \rceil, \ \xi    \in \mathcal{U}(0,1)$. This criterion is equivalent to the free-draining condition, $p_{C} = N_{C}^{-1}$ considered in Chapter \ref{ch:methods}, but occurs dynamically during the linking process instead of only at the end as a binary rejection after unlimited linking has occurred, and features in the original VMMC proposal \cite{whitelam_role_2009}. The alteration improves the kinetics with regard to the stated problem because the final evaluation of the move in Step 7 then depends on a sum of interaction strengths between members of the cluster and their surrounding environment, which allows the contribution of strong short-range bonds that would otherwise lead to linkage to be cancelled out by similarly strong long-range repulsive bonds. 
+
+The computational paths that occur in the linear three-particle model when simulataed with VMMC algorithm that includes a finite maximum cluster size is shown on the right of \ref{gVMMC}. The diagram of possible computational paths becomes more complex because there are now more decision points that rely on random number generation and so require input bits. $2$ additional bits are required at the start of an iteration to specify the value $|C|_{(\max)} \in \{1,2,3,4\}$, and at the final step which can now feature values between $0$ and $1$. Input bits are also now required to determine the order that neighbouring particles are selected for in Steps 4 and 5, because as not all particles may be considered before reaching $|C|_{(\max)}$, the algorithm must no longer depend on a deterministically ordered lists to avoid biases. As before, in the computational paths that occur for this situation on the right of \ref{gVMMC}, dashed lines connote moves that would occur with probability $\mathcal{O}(e^{-\beta J)}$. It can now be observed that the system that starts in the initial state can reach both microstates through paths that do not have negligible probabilities as $J$ becomes large. Therefore the simple 3-particle system with this modified VMMC algorithm will not exhibit dynamics that suffer from this type of unphysical kinetic frustration.  
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{gVMMC_5.png}
+    \caption[Computational paths following VMMC for unlimited and limited maximum cluster sizes]{Computational paths following VMMC for unlimited and limited maximum cluster sizes. All possible computational routes taken are shown for the system of three particles with the interaction strengths given top centre. All other interactions at other distances are set to $0$. For the tree on left: the computational paths taken following the binary decisions within the VMMC algorithm when linking is un-bounded so that the maximum cluster size, $|C|_{(max)} = \infty$. Dashed lines indicate low-probabilities that scale as $e^{-\beta J}$. Right: the computational paths that are taken when $|C|_{(max)} = \lceil \xi^{-1} \rceil$. Each tree begins with the random generation of a particle to move and the vector to move it through, shown at the second level of the tree. Each arrow connotes a binary decision during the algorithm, with blue arrows denoting FALSE and red TRUE. The final states of the system are shown as leaves of the tree. Only sets of decisions that leave the system in a distinct state are displayed.}
+    \label{gVMMC}
+\end{figure}
+
+In general, to prevent this type of kinetic frustration from occurring in a system with repulsive and attractive interactions, a linking scheme should propose moves of clusters that are not soley determined by the pairwise attractive linking process in the standard VMMC algorithm. The disadvantage with limiting the maximum cluster size is that in the dense polymeric system with hard core repulsions that we aim to study, omitting even one necessary particle from the cluster would cause the entire move to fail in Step 7. Therefore, it would be desirable to retain the unbounded growth of clusters but decouple the linking procedure from being correlated to local pairwise attractive interactions. 
+
+One method to achieve this aim consists of considering the units that are to be linked together by the VMMC algorithm not as each individual lattice site, but instead as a number of super-particles that can each consist of the particles located on multiple lattice sites. At each step of the simulation, the $N$ particles on the lattice can be randomly grouped into $M < N$ super-particles. The conventional VMMC algorithm is then applied to this ensemble, with the uniform random selection ensuring that moves still obey detailed balance, as the arrangement of super-particles would have the same proposal probability for the reverse move. The requirement that grouping is done randomly to obtain moves with state-independence, and therefore detailed balance, makes this approach inefficient, however, for the same reason as the previous suggestion. 
+
+A method that is appropriate for the particular Gō model with energies in Figure \ref{CouplingMatrix} consists of only allowing particles to join the cluster if a particle of the same type has not already joined the cluster. If a particle $i_{n}$ is already linked within the cluster, any other identical units from other polymers $i^{\prime}_{n}$ are not proposed for links to the cluster, and instead are only considered as the surrounding environment that is accounted for in Step 7 of the algorithm where an appropriate Boltzmann factor is calculated for the cluster translation move. This `Saturated Links', or SL, variant of the VMMC algorithm still obeys detailed balance through verification by the code-checking method, but suggests the set of candidate clusters for moves with a different propensity to the standard method with pairwise-linked clusters. Introducing some fraction of saturated link moves, $\varphi_{SL} > 0$, into the VMMC dynamics removes a source of non-physical kinetic frustration from the dynamics in these lattice systems where there are both attractive and repulsive particle interactions, mapping the simulated kinetics more accurately to the corresponding biophysical systems to be modelled.
+
+The effect of choosing a fraction of moves $\varphi_{SL} = 0.2$ is shown in Figure \ref{gVMMC_Comp}. The initial aggregate is now able to reach the ground state of free complexes in a reasonable time-frame, alleviating the unphysical frustration as expected. This method is efficient, with $\sim 35 \%$ of all clusters in the model proposed by SL undergoing a successful move and we select approach for the remainder of this chapter. 
+
+
+\section{Annealing in Reconstitution Protocols}
+
+We now aim to employ the mixed attractive-repulsive model from Equation \ref{repulsive_total_eq2} and the saturated-linking variant of the VMMC method that we have outlined to explore how frustrated kinetics of assembly can be ameliorated by spatio-temporal chemical changes. Varying a particular chemical parameter like pH, ionic strength or the concentration of a denaturant can be expected to produce a non-monotonic change in the interaction strength \cite{mitra_silico_2011}. To generically describe the variation in bonding that can be achieved, we let the coupling in $\mathbf{T}$ which is determined by the magnitude of $J$ in Equation \ref{J_Go} depend on a parameter $0 \le \gamma \le 1$ through
+
+\begin{equation}
+\label{total_eq}
+J(\gamma) =
+ (1 - f)J_{0} + \gamma f J_{0},
+ \end{equation}
+
+where $f$ is the sensitivity of the coupling strength to the particular chemical property that $\gamma$ represents.  When $f = 1 $, this model corresponds to a situation where bonds have a maximum sensitivity to $\gamma$ such that there are no interactions when $\gamma=0$. This case is identical to the maximally denaturing conditions with $J=0$ that are periodically applied in Figure \ref{Kawasaki_vs_VMMC}. We take the maximum value of $\gamma = 1$ to represent the physiological level of the chemical parameter, which corresponds to the observation that normal biological conditions produce the highest interaction strengths between biomolecules \cite{reverberi_factors_2007,madani_urea_2025}.  
+
+The inclusion of the general chemical parameter $\gamma$ provides a simple model for the laboratory reconstitution experiments which use high initial concentrations of non-specific denaturants, such as 8M urea or ionic strength, to fully disassemble complexes. In these protocols, $\gamma$ is gradually increased through dialysing the solution with denaturant against a less concentrated solution so that $\gamma$ changes from $0$ to $1$ over the course of many hours \cite{yamaguchi_refolding_2014} providing a higher yield of complexes compared to a sudden quench from $0$ to $1$ \cite{lowary_new_1998}. 
+
+
+We take the coupling strengths of $J_{0}=8$ and $\epsilon=0.5$ to represent the same complex as before when $\gamma=1$. To describe the case where bonds are entirely denatured by a chemical denaturant, we let $f=1$, which causes the complex to be destroyed when $\gamma=0$, producing the denatured components that can be seen in Figure \ref{Assembly_Frustration}. Returning to the physiological state with $\gamma=1$, the system is evolved for $10^{6}$ steps following the VMMC algorithm with $\varphi_{SL} = 0.2$. This schedule of chemical changes describes a quench, where a sudden change from denaturing conditions to physiological conditions is effected, as is achieved in laboratory conditions through a quick replacement of the solution \cite{yamaguchi_refolding_2014}. Under this condition, the system can be observed in Figure \ref{Assembly_Frustration} to form a misassembled aggregate. Though the thermodynamically stable complex must form eventually, numerous strong bonds in the aggregate must first be broken and re-formed, which causes the system to progress at a negligibly slow rate.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{F218.png}
+    \caption[Aggregate formation for VMMC with saturated linking under quenched conditions]{Aggregate formation for VMMC with saturated linking under quenched conditions. Snapshots of a $15 \times 15$ lattice consisting of 4 copies of $\mathbf{T}$. After denaturation of the complex at $\beta=0$, the free complexes fail to reform over $10^{6}$ moves with $\gamma=1$, forming a single higher-energy misassembled aggregate instead}
+    \label{Assembly_Frustration}
+\end{figure}
+
+
+
+To imitate protocols that apply gradual dialysis, after the system is denatured at $\gamma=0$ we can allow $\gamma$ to gradually return back to $1$ over the course of the simulation \cite{yamaguchi_refolding_2014}. The results of carrying out this schedule over $10^{6}$ steps for the same system are shown in Figure \ref{SA_GVMMC} as averages over $8$ repeats. The energy of the system initially returns more gradually with an annealed $\gamma$, but reaches a significantly lower average eventually. In the limit that the system were changed infinitely slowly, at each point in time it will re-equilibrate to an energy described by the Boltzmann distribution
+
+\begin{equation}
+    \langle E(\gamma) \rangle = \frac{\sum_{\{ \xi \}}E(\xi)e^{-\gamma\beta E(\xi)}}
+    {\sum_{ \{ \xi \}}e^{-\gamma \beta E(\xi)}} 
+\end{equation}
+
+which is an average over the set $\{ \xi \}$ of all distinguishable states the system can adopt. While the finite timescale of simulation means full equilibration will not occur, for relatively long and gradual schedules the functional relationship between the total system energy and $\gamma$ can be predicted to resemble the sigmoidal Boltzmann function, as is seen in Figure \ref{SA_GVMMC}.
+
+The fraction of correctly assembled complexes that are formed can be identified by constructing a graph, $G$ of all interacting sites on the lattice. If a sub-graph of $G$ contains exclusively the edges in $\mathbf{T}$, it is labelled a complex, and the fraction of particles on the lattice that satisfy this condition defines the \textit{yield of complexes}. In Figure \ref{SA_GVMMC}, the system, which begins with an initial yield of $1$ before the denaturation step occurs at $t=10^{3}$, exhibits a near full recovery of the freely diffusing complexes over $10^{6}$ iterations when the annealing schedule is applied. The annealing schedule can be observed to be essential in our model for efficient reconstitution, qualitatively agreeing with the experimental case \cite{yamaguchi_refolding_2014} and a previous theoretical study into folding of proteins described by the HP model \cite{lois_reliable_2008}. 
+
+A representative image of the final state of the system is shown on right of Figure \ref{SA_GVMMC} in each case. Results where the Saturated-Linking method developed in this chapter is used for a fraction $\varphi_{SL}=0.2$ are compared to those where  the standard VMMC is employed. While the energies reached are similar in both cases, with all correct bonds forming when the annealing protocol is applied, the complexes remain trapped in unphysical aggregates when $\varphi_{SL}=0$, and therefore do not constitute active, freely diffusing structures as required. 
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{A_Results3.png}
+    \caption[Comparison of quenched to annealed assembly]{Comparison of quenched to annealed assembly. Energy of a $15 \times 15$ lattice, top right panel, consisting of 4 copies of $\mathbf{T}$ relative to the ground state. Simulations follow the temporal schedule of chemical conditions $\gamma$ shown in the bottom left panel, in which after initial denaturation at $\gamma=0$, the system is either quenched (black lines and frames) or gradually annealed (red lines and frames). Upper panel, the total energy of the system relative to the ground state that describes all complexes correctly assembled. Central left panel: the corresponding yield of complexes as a fraction of their maximum value. The conditions for dashed and straight lines are indicated on right, above snapshots of the final state of the system in one example from each case}
+    \label{SA_GVMMC}
+\end{figure}
+
+
+
+In our model for complex self assembly, an externally imposed temporal annealing schedule that is achieved by gradually increasing the chemical control parameter, $\gamma$, ameliorates the rate of assembly. We now investigate whether an improvement in kinetics can be achieved if $\gamma$ is instead spatially distributed in a static gradient. 
+
+\section{Annealing in a Spatial Gradient}
+
+Although the precise direction and magnitude of all chemical gradients within the nucleolus has not yet been accurately quantified, we provide a model of ribosome assembly to address the broader question of whether, in general, gradients in chemical conditions could exist that would significantly expedite it. During ribosome synthesis, newly transcribed RNA issues from the centre of the nucleolus with a continuous flux, and gradually advects into the approximately spherical surrounding condensate where it folds and interacts with proteins to form assembled ribosomal sub-particles \cite{riback_viscoelasticity_2023}. These particles exit the condensate into the surrounding nucleoplasm which is a large, relatively dilute volume which causes them to dissipate away \cite{riback_composition_2019}. 
+
+The distinguishing feature of this system compared to the bulk changes in chemistry in reconstitution protocols that we have so far considered is that it is the spatial diffusion of individual biomolecules that induces temporal changes in their local interactions. As these changes are local, different parts of the system will experience different schedules of bond-strength change. There are therefore two additional levels of complexity to model in this system: the constant flux of material from a particular location, and the spatially variable interaction, which removes the correspondence of the system to one with bulk annealing. 
+
+
+We use the same target complex $\mathbf{T}$ with interaction parameters of $J_{0}=8,\epsilon=0.5$ and coupling described in Figure \ref{CouplingMatrix} to represent an assembled ribosomal subunit. To efficiently model the nucleolus, we employ a lattice that has periodic boundary conditions in one dimension while extending to infinity in the other, representing a cylindrical core that reaches to the centre of the droplet at $x=0$. 
+
+Transcription of DNA into strands of RNA in the core of the nucleolus is described in our model by positioning unassembled components on the first rows of the lattice from $x=0$. Radial diffusion of these components is ensured by placing a repulsive energy  barrier at $x<0$ so that as the system evolves the particles gradually diffuse along the column. At $x = L$, the surface of the condensate is defined as the boundary between the nucleolus and the dilute nucleoplasm, which is illustrated by the dashed lines in Figure \ref{replacement}.
+
+In order to simulate the escape of components at the surface of the condensate, the connected components are identified within a graph constructed from nodes representing each particle that contains edges wherever two particles interact at their current lattice positions, $J_{i_n,j_m}(x_{i_{n}},x_{j_m}) \ne 0$. A connected component for which the $x$ coordinates of all of its nodes are greater than $L$, is considered to have exited the condensate. Two such components are circled in Figure \ref{replacement} a) and c). Because these sub-graphs are isolated, the energy in the rest of the system does not change on their removal. To conserve the number of particles in the system, the removed material is instantaneously replaced at the lattice sites closest to the nucleolus centre at $x=0$, as is shown in Figure \ref{replacement} b) and d). The replaced components are arranged as linearly structures, resembling the nascent newly translated particles within the central nucleolar FC region. If the lattice sites to be updated are occupied, the system is evolved until this concerted removal and replacement can occur.   
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{replacement2.png}
+    \caption[Snapshots of particles evolving in a column with instantaneous removal and replacement steps]{Snapshots of particles evolving in a column with instantaneous removal and replacement steps. In a) an cluster, circled, fulfils the criteria for removal because all members within it are in the nucleoplasm, $x > L$, and do not interact with any other particle, forming a connected component, and there is space at $x = 0$ for replacement of the particles. b) The removed cluster is instantaneously placed at the start of the column, occupying adjacent sites. c) and d), the same process is repeated later in the evolution of the system.}
+    \label{replacement}
+\end{figure}
+
+The removal of structures that have diffused past $x=L$, and their instantaneous replacement at $x=0$, maintains the (N,V,T) canonical ensemble and introduces a source of non-equilibrium behaviour into the system, with work done when bonded structures are removed and replaced with less bonded units. This process imitates the non-equilibrium nature of ribogenesis within the nucleolus, which requires a large input of ATP to sustain transcription. We must first determine what the steady-state kinetics of assembly within this non-equilibrium system are, as it is now distinct from the bulk annealing schedule that undergoes relaxation to thermodynamic equilibrium. 
+
+Four complexes are placed within the condensate at positions $x < L$, and are initially denatured by globally setting $\gamma=0$. With the individual positions of polymers decorrelated, we reset the global chemical parameter $\gamma=1$ and the system is subsequently evolved over a large number of iterations of the VMMC algorithm to achieve a steady state, choosing $\varphi_{R} =0.2$ and $\varphi_{SL} =0.2$ as was done in the bulk annealing case that was shown in Figure \ref{SA_GVMMC}. The total energy of particles within the column are shown by the dashed lines in Figure \ref{grad_results} b) to rapidly reach a stead state. Even with the non-equilibrium flux of material, the system demonstrates significant kinetic frustration that prevents a considerable flux of $\mathbf{T}$ from exiting the condensate, Figure \ref{grad_results} a), for various column lengths. We reason that the flux of particles through the column in this model therefore does not, by itself, cause a significant improvement in self assembly, with the system still resembling the quenched case in Figure \ref{SA_GVMMC}.
+
+
+We now introduce a spatial gradient of the chemical parameter that takes values $0 \le \gamma_{x} \le 1$ that depend on the position within the column, $x$. Since $\gamma_{x}$ varies in space, the coupling between two particles $i$ and $j$ becomes a function of their respective positions $\mathbf{x}_{i}$ and $\mathbf{x}_{j}$. The value of $\gamma_{x}$ is taken to represent the fraction of activity that bonding regions on each particle retain, which would occur if $1-\gamma$ was proportional to the ionic strength, screening charges following the Debye-Hückel limiting law \cite{debye_zur_1923} and consequently decreasing coupling strengths. We accordingly express the coupling strength as a function of the product of $\gamma_{x}$ at each of the particle positions 
+
+\begin{equation}
+    \label{quadratic}
+    J_{i_n,j_m}(x_{i_{n}},x_{j_m}) =  \gamma_{x_{i_{n}}} \gamma_{x_{j_{m}}} J^{*}_{i_{n},j_{m}},
+\end{equation}
+
+with $J^{*}_{i_{n},j_{m}}  = J_{i_{n},j_{m}}(\gamma_{x_{i_{n}}} = \gamma_{x_{j_{m}}}=1)$ the coupling achieved between particles in the physiological conditions outside the condensate. The gradient is taken to linearly increase as $\gamma_{x} =  \frac{x}{L}$, describing a scenario of strongly denaturing conditions within the core of the condensate that gradually taper to physiological conditions at the boundary. The parameters of the model used for these simulations are presented below
+
+
+\begin{table}[H]
+    \centering
+    \begin{tabular}{c|c}
+        
+        \textbf{Parameter}  & \textbf{Value} \\
+        \hline
+        Target complex, $\mathbf{T}$ & Gō model complex with 4 polymers, Figure \ref{target} \\
+        Particle number, $N$ & $4$ copies of $\mathbf{T}$ \\
+        System size, $(W \times L)$ & $(10 \times L), \ \   L \in \{10,60,120 \} $ \\
+        Chemical Gradient, $\gamma_{x}$ & $\in \big{\{}\frac{x}{L} ,1 \big{\}}$\\
+        Chemical sensitivity of bond strength, $J_{i_{n},i_{m}}$ & Equation \ref{quadratic}  \\
+        Maximum bond strength at $\gamma=1$, $J^{*}_{i_{n},i_{m}}$ & Equation \ref{repulsive_total_eq2} with $J = 8, \epsilon = 0.5$ \\
+        VMMC move types & $\varphi_{SL} = 0.2, \varphi_{r} = 0.2$
+    \end{tabular}
+    \label{tab:placeholder}
+\end{table}
+
+  
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{Grad2.png}
+    \caption[Snapshots of assembly within a column with gradient]{Snapshots of the system with gradient length $L=60$ and corresponding chemical parameter, $\gamma$, which is shown by the shading on each lattice site.}
+    \label{Grad}
+\end{figure}
+
+Snapshots of the system simulated for a length of column $L=60$ that features the linear gradient are shown in \ref{Grad}. The yield of complexes for different lengths of column with gradient are shown in Figure \ref{grad_results} a) by the continuous lines. Significantly more assembled complexes exit the column when the gradient is present, especially when it extends along a long column, suggesting that the chemical gradient has a significant effect on assembly for this system.
+
+The average energies within the column are, when the gradient exists, sustained at higher, less favourably bonded levels. This feature resembles both the energy profile of the rugged energy landscape model we considered in Figure \ref{RW_Result} and the bulk annealing scheme in the model of reconstitution protocols in Figure \ref{SA_GVMMC} in that the system is prevented from reaching deep minima in the landscape, enhancing the overall rate of assembly. 
+
+
+
+\begin{sidewaysfigure}   
+    \noindent \includegraphics[width=1.0\linewidth]{C2_final.png}\qquad
+    \caption[Comparison of assembly rates and efficiencies for different lengths of columns with and without a gradient]{Comparison of assembly rates and efficiencies for different lengths of columns with and without a gradient. a) The average number of complexes $\mathbf{T}$ that have exited the column for different column lengths both with and without (dashed lines) the presence of a linear gradient $\gamma_{x} = \frac{x}{L}$, and b) the average total energies for the same systems. Areas denote the error of mean, $\frac{\sigma}{\sqrt{n}}$ for the $n=8$ repeats shown. Both energies and yields reach steady states over the $5 \times 10^{6}$ VMMC iterations,  c) The proportion of target compared to all other complexes exiting the column for each condition tested. d) The efficiency of each system, E, defined as the fraction of total particles exiting the column that are correctly assembled from c), $\text{E} = \frac{\textcolor{red}{\mathbf{T}}}{\textcolor{gray}{\text{C}}}$. Error bars denote the error of mean in calculated efficiency $\frac{\sigma_{E}}{\sqrt{n}}$ following propagation of correlated errors \cite{taylor_introduction_1997}}
+    \label{grad_results}
+\end{sidewaysfigure}
+
+The rate that correctly assembled complexes leave the column in each case is shown in Figure \ref{grad_results} c), along with the corresponding amount of all other misassembled structures. The efficiency of assembly, defined by the fraction of particles that constitute correctly assembled complexes, becomes larger for long columns with gradients, Figure \ref{grad_results} d), while staying approximately constant when no gradient is present. Without a gradient the flux of all types of particle through the column becomes smaller as $L$ increases, but when the gradient exists this trend reverses, with overall more material of both assembled and misassembled varieties moving through the column. 
+
+The generally enhanced flux through columns with a gradient can be rationalised by the presence of advection. Advection occurs here because any internal bonds in a diffusing structure will improve in strength as $\gamma$ increases following Equation \ref{quadratic}, which biases diffusion in the positive $x$ direction towards the end of the column. The probability that a structure containing a bond with a strength $J^{*}$ takes a step in the $+x$ direction, will be larger than its reverse move by a ratio
+
+\begin{equation}
+    \label{advection}
+    \frac{p_{+}}{p_{-}} = \frac{\min(1,\exp({-\gamma^{2}_{x+1}J^{*}}))}{\min(1,\exp({-\gamma^{2}_{x}J^{*}}))} = \exp \Big{(}{\frac{(2x+1)J^{*}}{L^{2}}} \Big{)},
+\end{equation}
+
+following the dependence on chemical gradient in Figure \ref{quadratic}. As this ratio is greater than $1$ at all positions in the column, any linked cluster will drift with a bias in the $+x$ direction that becomes more pronounced as the number of bonds it contains increases. 
+
+
+The strong transport effect on biomolecules by advection within chemical gradients is demonstrated in experiments on the motion of proteins in salt gradients \cite{peter_microscale_2022}. The corresponding different rates of advection of partially assembled clusters, based on the degree of folding within them in the gradient of salt or denaturant, also resembles ion exclusion chromatography protocols \cite{freydell_ion-exchange_2010, li_dual_2002}. These methods achieve purer reconstituted proteins by supplying a cation or anion exchange column that has an affinity for the denatured structures. The concentration of salt or denaturant in the mobile phase required to induce folding and subsequent dissociation of biomolecules from the stationary column phase is variable, allowing folded and denatured structures to become separated, as is the case in our model.
+
+To explore the relative contribution of both the effect of bulk annealing and the effect of advection and molecular separation within the column, we can increase the strength of bonding within the complex whilst simultaneously decreasing the gradient that is experienced within the column. This modification will leave the rate of molecule advection described by Equation \ref{advection} unchanged, but can be expected to disrupt the annealing process by rendering the bond strengths too high for considerable rearrangement to occur. 
+
+In Figure \ref{M10}, a model system that has bond strengths increased by a factor of ten within a column with a correspondingly decreased gradient is compared to the efficiently assembling system from before with $L=60$. The simulations show that the modified system diminishes both the total mass of material exiting the column and also the fraction of the target complex that does so. Though the propensity for advection to occur in the column is maintained in both cases, the increased frustration and aggregation causes structures to diffuse slower with less overall flux. This data implies that the annealing effect is a necessary feature of a spatial gradient that contributes to enhanced assembly.
+
+
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=1\linewidth]{C2_M102.png}
+    \caption[Particle advection is not sufficient to explain enhanced assembly in a gradient]{Particle advection is not sufficient to explain enhanced assembly in a gradient. a) The proportion of target complex compared to all other complexes exiting the a column of length $L=60$ with different base bond strengths and the gradients shown in b). The conventional conditions, labelled in orange, is identical to that shown in the same colour in Figure \ref{grad_results}. The black labelled data, which constitutes much stronger, less reversible bonding, produces dense clusters within the column, as shown in snapshots in c).}
+    \label{M10}
+\end{figure}
+
+\section{Outlook}
+
+In this chapter, we have presented a model for the assembly of biomolecular complexes from denatured components. The individual biomolecules are represented as flexible heteropolymers, binding together by specific Gō-like interactions into complexes of defined stoichiometry and evolving according to the kinetics described by the VMMC algorithm. Long-range repulsive interactions were added to provide specific target complexes which revealed a shortcoming of the VMMC method for which a solution was proposed that saturates the links formed, preventing over-correlation of proposed clusters with short-ranged attractive potentials. Changes to the algorithm were verified to follow detailed balance with a novel method that deterministically checks that code follows detailed balance. This method is general and can be implemented with minimal changes to the code that it analyses.
+
+By introducing a dependence on solution chemistry into the model, we demonstrated that spatiotemporal gradients in chemicals like salts or denaturants can alleviate frustrated kinetics that result when multiple species are present, where otherwise long-lived aggregates form. This result highlights why many reconstitution protocols that have been developed for assembly and folding of proteins and complexes from denatured components utilise gradual dialysis. A model was provided for ribosome assembly within the nucleolus through describing a column of interacting polymers that are continuously recycled, providing a constant flux of material. The rate and efficiency of assembly was shown to improve significantly when a chemical gradient existed within the column, causing annealing to take place. This result suggests a new, unexplored property of condensates.
+
+
+
+
