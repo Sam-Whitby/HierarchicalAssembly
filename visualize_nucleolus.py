@@ -40,14 +40,9 @@ import numpy as np
 
 
 # --------------------------------------------------------------------------- #
-# Colour palette: 4 polymer types, 4 copies each
+# 4 colours, one per polymer type (0-3).  Copy number has no effect on colour.
 # --------------------------------------------------------------------------- #
-_POLY_COLORS = [
-    ["#e6194b", "#f58231", "#ffe119", "#bfef45"],   # type 0
-    ["#3cb44b", "#42d4f4", "#4363d8", "#911eb4"],   # type 1
-    ["#f032e6", "#a9a9a9", "#fabed4", "#aaffc3"],   # type 2
-    ["#ffd8b1", "#dcbeff", "#469990", "#000075"],   # type 3
-]
+_POLY_COLORS = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
 _BACKBONE_COLOR = "#333333"
 _BOND_LW = 1.5
 
@@ -157,7 +152,6 @@ def main():
 
     # Axis limits from data
     all_x = [p[2] for fr in frames for p in fr['particles']]
-    all_y = [p[3] for fr in frames for p in fr['particles']]
     x_min = -1.0
     x_max = max(all_x) + 2.0
 
@@ -167,24 +161,49 @@ def main():
     y_max  = col_W + 0.5
 
     # ---------------------------------------------------------------------- #
-    # Figure: left = animation, right = stacked plots
+    # Figure layout: animation panel sized with equal x/y scale; right panels
+    # at fixed width.  Using fig.add_axes with manual inch-level positioning
+    # so that the animation axes has exactly the right aspect without padding.
     # ---------------------------------------------------------------------- #
-    fig = plt.figure(figsize=(14, 6))
-    fig.suptitle(args.title, fontsize=11)
+    SCALE      = 0.38   # inches per data unit
+    MAX_AW     = 15.0   # cap animation width (inches)
+    RIGHT_W    = 2.8    # right panel width (inches)
+    ML, MR     = 0.75, 0.30   # left/right outer margins
+    MT, MB     = 0.45, 0.55   # top/bottom outer margins
+    WS, HS     = 0.60, 0.45   # gap between anim↔right panels and between right panels
 
-    gs = fig.add_gridspec(2, 2, width_ratios=[2.2, 1], hspace=0.45, wspace=0.35)
-    ax_anim  = fig.add_subplot(gs[:, 0])   # full left column
-    ax_ener  = fig.add_subplot(gs[0, 1])   # top-right
-    ax_exits = fig.add_subplot(gs[1, 1])   # bottom-right
+    anim_h = (y_max - y_min) * SCALE
+    anim_w = min((x_max - x_min) * SCALE, MAX_AW)
+    # If capped, rescale uniformly so aspect remains equal
+    if anim_w == MAX_AW:
+        SCALE = anim_w / (x_max - x_min)
+        anim_h = (y_max - y_min) * SCALE
+
+    rp_h   = max((anim_h - HS) / 2.0, 0.9)   # each right panel height
+    fig_w  = ML + anim_w + WS + RIGHT_W + MR
+    fig_h  = MT + anim_h + MB
+
+    def fx(x): return x / fig_w   # inches → figure fraction
+    def fy(y): return y / fig_h
+
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    fig.suptitle(args.title, fontsize=10, y=1.0 - 0.1/fig_h)
+
+    ax_anim  = fig.add_axes([fx(ML),              fy(MB),              fx(anim_w), fy(anim_h)])
+    rx       = fx(ML + anim_w + WS)
+    rw       = fx(RIGHT_W)
+    rh       = fy(rp_h)
+    ax_ener  = fig.add_axes([rx, fy(MB + rp_h + HS), rw, rh])
+    ax_exits = fig.add_axes([rx, fy(MB),              rw, rh])
 
     # --- Animation panel ---
-    ax_anim.set_aspect("equal")
     ax_anim.set_xlim(x_min, x_max)
     ax_anim.set_ylim(y_min, y_max)
     ax_anim.set_xlabel("x  (column axis)", fontsize=9)
     ax_anim.set_ylabel("y", fontsize=9)
 
-    # Gradient background
+    # Gradient background — use ax.set_aspect("equal") AFTER imshow so that
+    # imshow's own aspect parameter does not override the axes aspect.
     grad_img = np.tile(
         np.clip(np.linspace(0, 1, 256), 0, 1)[np.newaxis, :],
         (10, 1)
@@ -193,6 +212,9 @@ def main():
                    extent=[0, grad_L, y_min, y_max],
                    origin="lower", aspect="auto",
                    cmap="Blues", alpha=0.20, zorder=0)
+    # Set equal aspect after imshow (imshow with aspect="auto" would otherwise
+    # override this on the axes level in some matplotlib versions).
+    ax_anim.set_aspect("equal", adjustable="box")
     ax_anim.axvline(0,      color="black",     lw=1.5, zorder=1)
     ax_anim.axvline(grad_L, color="steelblue", lw=1.5, linestyle="--", zorder=1)
     ax_anim.text(grad_L + 0.3, y_min + 0.3, f"L={grad_L:.0f}",
@@ -200,7 +222,7 @@ def main():
 
     # Polymer-type legend
     legend_patches = [
-        mpatches.Patch(color=_POLY_COLORS[t][0], label=f"Polymer type {t}")
+        mpatches.Patch(color=_POLY_COLORS[t], label=f"Polymer type {t}")
         for t in range(4)
     ]
     ax_anim.legend(handles=legend_patches, loc="upper right", fontsize=7,
@@ -243,7 +265,7 @@ def main():
 
         xs     = [p[2] for p in pts]
         ys     = [p[3] for p in pts]
-        colors = [_POLY_COLORS[p[1] % 4][p[4] % 4] for p in pts]
+        colors = [_POLY_COLORS[p[1] % 4] for p in pts]
 
         scat.set_offsets(np.column_stack([xs, ys]))
         scat.set_color(colors)
@@ -293,7 +315,6 @@ def main():
         ani.save(args.output, writer=writer)
         print("Saved.")
     else:
-        plt.tight_layout()
         plt.show()
 
 
