@@ -23,6 +23,7 @@ class NucleolusModel : public StickySquare
 public:
     double columnLength;   //!< L: condensate length in lattice units.
     bool   hasGradient;    //!< Whether a spatial gradient is active.
+    bool   denatured;      //!< When true γ=0 everywhere (β→0 denaturation phase).
 
     //! Constructor – identical to StickySquare plus L and gradient flag.
     NucleolusModel(Box&, std::vector<Particle>&, CellList&,

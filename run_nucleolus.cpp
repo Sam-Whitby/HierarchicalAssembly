@@ -226,6 +226,43 @@ static void placeParticles(vector<Particle>& particles,
 }
 
 // ============================================================
+//  Place particles as 4 assembled copies of the target complex T.
+//  Each copy is placed at a different x offset within the condensate.
+//  Copy c is placed at x_offset = 2 + c*6 (copies span x = 2..5, 8..11, 14..17, 20..23).
+//  The complex is centered in y: y_offset = (W-4)/2.
+// ============================================================
+static void placeAssembled(vector<Particle>& particles,
+                            CellList& cells, Box& box,
+                            int nCopies, int W, int /*L_col*/)
+{
+    cells.reset();
+    int nParticles = nCopies * N0;
+    for (int i = 0; i < nParticles; i++) {
+        particles[i].index = i;
+        particles[i].position.resize(2);
+        particles[i].orientation.resize(2);
+        particles[i].orientation[0] = 1.0;
+        particles[i].orientation[1] = 0.0;
+    }
+
+    int y_offset = (W >= 4) ? (W - 4) / 2 : 0;
+
+    for (int c = 0; c < nCopies; c++) {
+        int x_offset = 2 + c * 6;  // non-overlapping 4×4 blocks with a gap of 2
+        for (int lid = 0; lid < N0; lid++) {
+            int gi = c * N0 + lid;
+            double px = (double)(x_offset + TARGET_X[lid]);
+            double py = (double)((y_offset + TARGET_Y[lid]) % W);
+            particles[gi].position[0] = px;
+            particles[gi].position[1] = py;
+            box.periodicBoundaries(particles[gi].position);
+            particles[gi].cell = cells.getCell(particles[gi]);
+            cells.initCell(particles[gi].cell, particles[gi]);
+        }
+    }
+}
+
+// ============================================================
 //  Occupancy map: set<pair<int,int>> of occupied (x,y) sites
 // ============================================================
 static set<pair<int,int>> buildOccupancy(const vector<Particle>& particles)
@@ -240,8 +277,17 @@ static set<pair<int,int>> buildOccupancy(const vector<Particle>& particles)
 }
 
 // ============================================================
-//  Try to place a set of particle indices (globalIds, 16 particles)
-//  as 4 horizontal polymer chains near x=1.
+//  Try to place a set of particle indices as vertical polymer chains
+//  near x = 0, scanning column-major (y varies fastest).
+//
+//  Placement layout (example: W=10, N_SEG=4):
+//    polymer 0 → x=0, y=0,1,2,3
+//    polymer 1 → x=0, y=4,5,6,7
+//    polymer 2 → x=0, y=8,9 then x=1, y=0,1   (PBC wrap in y)
+//    polymer 3 → x=1, y=2,3,4,5
+//
+//  Consecutive segments within a polymer are connected by backbone bonds
+//  at distance 1 (same x) or sqrt(2) (crossing x boundary with PBC wrap).
 //  Returns true if successful, false if no space was found.
 // ============================================================
 static bool replacementPlacement(
@@ -249,6 +295,8 @@ static bool replacementPlacement(
     const vector<int>& globalIds, int W, int L_col,
     vmmc::VMMC& vmmc)
 {
+    int nParts = (int)globalIds.size();
+
     // Build occupancy map excluding the particles to be replaced
     set<int> replSet(globalIds.begin(), globalIds.end());
     set<pair<int,int>> occ;
@@ -259,41 +307,38 @@ static bool replacementPlacement(
         occ.insert({px, py});
     }
 
-    // Try to place 4 horizontal chains of length 4 in a 4×4 block
-    // Search x from 1 upward, y from 0
-    for (int x0 = 1; x0 <= L_col; x0++) {
-        for (int y0 = 0; y0 < W; y0++) {
-            // Check if a 4-rows × 4-cols block is free
-            bool blockFree = true;
-            for (int p = 0; p < N_POLYMER && blockFree; p++) {
-                int y = (y0 + p) % W;
-                for (int s = 0; s < N_SEG && blockFree; s++) {
-                    if (occ.count({x0 + s, y})) blockFree = false;
-                }
-            }
-            if (!blockFree) continue;
+    // Scan linearised column (linear index = x*W + y) from x=0 forward.
+    // Find a run of nParts consecutive free sites.
+    int maxLinear = (L_col + 1) * W;  // search up to x = L_col
 
-            // Place 4 polymers as horizontal chains
-            for (int p = 0; p < N_POLYMER; p++) {
-                int y = (y0 + p) % W;
-                for (int s = 0; s < N_SEG; s++) {
-                    int gi = globalIds[p * N_SEG + s];
-                    double newX = (double)(x0 + s);
-                    double newY = (double)y;
-                    particles[gi].position[0] = newX;
-                    particles[gi].position[1] = newY;
-                    box.periodicBoundaries(particles[gi].position);
-                    int newCell = cells.getCell(particles[gi]);
-                    cells.updateCell(newCell, particles[gi], particles);
-                    // Sync VMMC's internal preMovePosition to prevent stale-position
-                    // desync: without this, rotation moves can compute cluster-relative
-                    // displacements from the old (large-x) position, producing y values
-                    // many box-lengths out of range that exceed VMMC's single-wrap PBC.
-                    vmmc.syncPosition(gi, &particles[gi].position[0]);
-                }
-            }
-            return true;
+    for (int base = 0; base < maxLinear; base++) {
+        bool allFree = true;
+        for (int k = 0; k < nParts && allFree; k++) {
+            int idx = base + k;
+            int x   = idx / W;
+            int y   = idx % W;
+            if (x > L_col) { allFree = false; break; }
+            if (occ.count({x, y})) allFree = false;
         }
+        if (!allFree) continue;
+
+        // Place particles in column-major order
+        for (int k = 0; k < nParts; k++) {
+            int gi  = globalIds[k];
+            int idx = base + k;
+            double newX = (double)(idx / W);
+            double newY = (double)(idx % W);
+            particles[gi].position[0] = newX;
+            particles[gi].position[1] = newY;
+            box.periodicBoundaries(particles[gi].position);
+            int newCell = cells.getCell(particles[gi]);
+            cells.updateCell(newCell, particles[gi], particles);
+            // Sync VMMC's internal preMovePosition to prevent stale-position desync:
+            // without this, rotation moves compute cluster displacements from the old
+            // (large-x) position, producing y values out of range.
+            vmmc.syncPosition(gi, &particles[gi].position[0]);
+        }
+        return true;
     }
     return false;  // no space available
 }
@@ -362,23 +407,13 @@ static int checkAndReplace(NucleolusModel& model,
 
     int nReplaced = 0;
     for (auto& comp : components) {
-        if ((int)comp.size() != N0) {
-            // Only full-complex-sized connected components are candidates
-            // (partial groups of free polymers also exit; remove any where
-            //  all particles have x > L_col to maintain steady state)
-            // Check if ALL particles in this component have x > L_col
-            bool allPast = true;
-            for (int gi : comp)
-                if (particles[gi].position[0] <= (double)L_col) { allPast = false; break; }
-            if (!allPast) continue;
-        } else {
-            bool allPast = true;
-            for (int gi : comp)
-                if (particles[gi].position[0] <= (double)L_col) { allPast = false; break; }
-            if (!allPast) continue;
-        }
+        // Check if ALL particles in this component have x > L_col
+        bool allPast = true;
+        for (int gi : comp)
+            if (particles[gi].position[0] <= (double)L_col) { allPast = false; break; }
+        if (!allPast) continue;
 
-        // Verify isolation: no edges to particles outside this component
+        // Verify isolation: no non-backbone edges to particles outside this component
         set<int> compSet(comp.begin(), comp.end());
         bool isolated = true;
         const int maxInt = 30;
@@ -399,16 +434,7 @@ static int checkAndReplace(NucleolusModel& model,
         }
         if (!isolated) continue;
 
-        // Try to replace: comp must have exactly N0 particles (one complex worth)
-        // Only remove if the component size equals one full complex (16 particles)
-        // so that partial groups are not recycled individually (they will merge
-        // back into the next eligible component).
-        if ((int)comp.size() != N0) continue;
-
-        // Attempt placement at x ≈ 0
-        // Re-order comp so that polymer assignment is consistent with global ids
-        // (copy c, polymer p → particles c*N0 + p*N_SEG .. c*N0 + p*N_SEG + N_SEG-1)
-        // Just sort by global index so backbone pairing is preserved.
+        // Sort by global index so polymer order is preserved
         sort(comp.begin(), comp.end());
 
         if (replacementPlacement(particles, cells, box, comp, W, L_col, vmmc)) {
@@ -426,12 +452,13 @@ static int checkAndReplace(NucleolusModel& model,
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double L_col, double W,
-                        long long step, double energy, long long totalExited)
+                        long long step, double energy, long long totalExited,
+                        const char* phase = "main")
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
-    fprintf(fp, "step=%lld energy=%.6f exited=%lld L=%.1f W=%.1f nCopies=%d\n",
-            step, energy, totalExited, L_col, W, nCopies);
+    fprintf(fp, "step=%lld energy=%.6f exited=%lld L=%.1f W=%.1f nCopies=%d phase=%s\n",
+            step, energy, totalExited, L_col, W, nCopies, phase);
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -450,44 +477,50 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
 int main(int argc, char** argv)
 {
     // --- Defaults ---
-    long long nsteps    = 10000;
-    long long nsnaps    = 1000;
-    int  L_col          = 60;
-    int  W              = 10;
-    bool useGradient    = false;
-    bool useStokes      = false;
-    double phi_sl       = 0.2;
-    double phi_rot      = 0.2;
-    string outPrefix    = "nucleolus";
-    unsigned int seed   = 0;
+    long long nsteps         = 10000;
+    long long nsnaps         = 1000;
+    long long freeSteps      = 0;      // phase 1: assembled free diffusion
+    long long denatureSteps  = 0;      // phase 2: β→0 denaturation
+    int  L_col               = 60;
+    int  W                   = 10;
+    bool useGradient         = false;
+    bool useStokes           = false;
+    double phi_sl            = 0.2;
+    double phi_rot           = 0.2;
+    string outPrefix         = "nucleolus";
+    unsigned int seed        = 0;
 
     // --- Parse arguments ---
     for (int i = 1; i < argc; i++) {
-        if      (!strcmp(argv[i],"--steps")     && i+1<argc) { nsteps    = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--snapshots") && i+1<argc) { nsnaps    = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--length")    && i+1<argc) { L_col     = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--width")     && i+1<argc) { W         = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--gradient"))               { useGradient = true; }
-        else if (!strcmp(argv[i],"--stokes"))                 { useStokes   = true; }
-        else if (!strcmp(argv[i],"--phi-sl")    && i+1<argc) { phi_sl    = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--phi-rot")   && i+1<argc) { phi_rot   = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--output")    && i+1<argc) { outPrefix = argv[++i]; }
-        else if (!strcmp(argv[i],"--seed")      && i+1<argc) { seed      = (unsigned int)atoi(argv[++i]); }
+        if      (!strcmp(argv[i],"--steps")          && i+1<argc) { nsteps        = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--snapshots")      && i+1<argc) { nsnaps        = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--free-steps")     && i+1<argc) { freeSteps     = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--denature-steps") && i+1<argc) { denatureSteps = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--length")         && i+1<argc) { L_col         = atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--width")          && i+1<argc) { W             = atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--gradient"))                    { useGradient   = true; }
+        else if (!strcmp(argv[i],"--stokes"))                      { useStokes     = true; }
+        else if (!strcmp(argv[i],"--phi-sl")         && i+1<argc) { phi_sl        = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--phi-rot")        && i+1<argc) { phi_rot       = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--output")         && i+1<argc) { outPrefix     = argv[++i]; }
+        else if (!strcmp(argv[i],"--seed")           && i+1<argc) { seed          = (unsigned int)atoi(argv[++i]); }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n"
                  << "Run ./run_nucleolus --help for usage.\n";
         }
     }
 
-    // Clamp snapshots to at most nsteps+1 (step 0 + nsteps steps)
-    if (nsnaps > nsteps + 1) nsnaps = nsteps + 1;
-    // Interval between saved frames (save every saveEvery steps, plus step 0)
-    long long saveEvery = (nsnaps <= 1) ? nsteps : max(1LL, nsteps / (nsnaps - 1));
+    long long totalSteps = freeSteps + denatureSteps + nsteps;
+    // Clamp snapshots; distribute evenly over total simulation
+    if (nsnaps > totalSteps + 1) nsnaps = totalSteps + 1;
+    long long saveEvery = (nsnaps <= 1) ? totalSteps : max(1LL, totalSteps / (nsnaps - 1));
 
     cout << "=== Nucleolus Assembly Simulation ===" << endl;
-    cout << "  steps=" << nsteps << " snapshots=" << nsnaps
-         << " (every " << saveEvery << " steps)"
-         << "  L=" << L_col << " W=" << W
+    cout << "  free-steps=" << freeSteps
+         << "  denature-steps=" << denatureSteps
+         << "  main-steps=" << nsteps
+         << "  snapshots=" << nsnaps << " (every " << saveEvery << " steps)" << endl;
+    cout << "  L=" << L_col << " W=" << W
          << "  gradient=" << useGradient << " stokes=" << useStokes
          << "  phi_sl=" << phi_sl << " phi_rot=" << phi_rot << endl;
 
@@ -547,19 +580,25 @@ int main(int argc, char** argv)
                           maxInteractions, interactionEnergy, interactionRange,
                           interactions, (double)L_col, useGradient);
 
-    // --- Place particles as denatured linear polymers near x=0 ---
-    placeParticles(particles, cells, box, nCopies, W);
+    // --- Place particles as assembled copies of target complex T ---
+    // (If free-steps > 0 we start assembled; otherwise we start denatured)
+    if (freeSteps > 0 || denatureSteps > 0) {
+        placeAssembled(particles, cells, box, nCopies, W, L_col);
+    } else {
+        placeParticles(particles, cells, box, nCopies, W);
+    }
 
     // --- VMMC setup ---
-    double coordinates[dimension * nParticles];
-    double orientations[dimension * nParticles];
-    bool   isIsotropic[nParticles];
+    vector<double> coordinates(dimension * nParticles);
+    vector<double> orientations_v(dimension * nParticles);
+    // Note: std::vector<bool> is specialised and lacks .data(); use a plain array.
+    bool isIsotropicArr[nParticles];
     for (int i = 0; i < nParticles; i++) {
-        coordinates[2*i]     = particles[i].position[0];
-        coordinates[2*i + 1] = particles[i].position[1];
-        orientations[2*i]     = 1.0;
-        orientations[2*i + 1] = 0.0;
-        isIsotropic[i]        = true;
+        coordinates[2*i]       = particles[i].position[0];
+        coordinates[2*i + 1]   = particles[i].position[1];
+        orientations_v[2*i]     = 1.0;
+        orientations_v[2*i + 1] = 0.0;
+        isIsotropicArr[i]       = true;
     }
 
     double maxTrialTranslation = 1.5;
@@ -586,10 +625,10 @@ int main(int argc, char** argv)
             return pos[0] < -0.5;  // x = -1 on lattice → outside boundary
         };
 
-    vmmc::VMMC vmmc(nParticles, dimension, coordinates, orientations,
+    vmmc::VMMC vmmc(nParticles, dimension, coordinates.data(), orientations_v.data(),
                      maxTrialTranslation, maxTrialRotation,
                      probTranslate, referenceRadius,
-                     maxInteractions, &boxSize[0], isIsotropic, isRepulsive,
+                     maxInteractions, &boxSize[0], isIsotropicArr, isRepulsive,
                      callbacks, isLattice, nLatticeNeighbours,
                      phi_sl, N0 /*slN0: particle type period*/);
 
@@ -613,41 +652,69 @@ int main(int argc, char** argv)
 
     // Write initial frame (step 0)
     double initEnergy = model.getEnergy() * nParticles;
-    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0);
+    const char* initPhase = (freeSteps > 0) ? "assembled" : (denatureSteps > 0 ? "denature" : "main");
+    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0, initPhase);
     fprintf(fp_stat, "0  %.4f  0  0.0000\n", initEnergy);
 
-    // --- Simulation loop ---
+    // --- Simulation loop (three phases) ---
     cout << "Starting simulation..." << endl;
     clock_t startTime = clock();
     long long totalExited = 0;
+    long long globalStep  = 0;
 
-    for (long long step = 1; step <= nsteps; step++) {
-        // One outer iteration = nParticles VMMC move attempts
+    // Helper lambda: run one outer iteration and optionally save a frame.
+    auto runStep = [&](const char* phase, bool doReplace) {
+        globalStep++;
         vmmc += nParticles;
 
-        // Check for isolated components past x=L; remove and replace
-        int nExited = checkAndReplace(model, particles, cells, box,
-                                       nCopies, W, L_col, vmmc);
-        totalExited += nExited;
+        if (doReplace) {
+            int nExited = checkAndReplace(model, particles, cells, box,
+                                           nCopies, W, L_col, vmmc);
+            totalExited += nExited;
+        }
 
         double energy      = model.getEnergy() * nParticles;
         double acceptRatio = (double)vmmc.getAccepts() / (double)vmmc.getAttempts();
 
-        // Save snapshot if this step falls on a save interval or is the last step
-        bool doSave = (step % saveEvery == 0) || (step == nsteps);
+        bool doSave = (globalStep % saveEvery == 0) || (globalStep == totalSteps);
         if (doSave) {
             writeFrame(fp_traj, particles, nCopies, L_col, W,
-                       step, energy, totalExited);
+                       globalStep, energy, totalExited, phase);
             fprintf(fp_stat, "%lld  %.4f  %lld  %.4f\n",
-                    step, energy, totalExited, acceptRatio);
+                    globalStep, energy, totalExited, acceptRatio);
         }
 
-        if (step % max(1LL, nsteps/20) == 0) {
-            cout << "  step " << step << "/" << nsteps
+        long long logEvery = max(1LL, totalSteps / 20);
+        if (globalStep % logEvery == 0) {
+            cout << "  [" << phase << "] step " << globalStep << "/" << totalSteps
                  << "  E=" << energy
                  << "  exited=" << totalExited
                  << "  accept=" << acceptRatio << "\n";
         }
+    };
+
+    // Phase 1: assembled free diffusion (no replacement, gradient/coupling active)
+    if (freeSteps > 0) {
+        cout << "Phase 1: assembled free diffusion (" << freeSteps << " steps)..." << endl;
+        model.denatured = false;
+        for (long long s = 0; s < freeSteps; s++)
+            runStep("assembled", false);
+    }
+
+    // Phase 2: denaturation (β→0: γ=0 disables all weak coupling; backbone intact)
+    if (denatureSteps > 0) {
+        cout << "Phase 2: denaturation (" << denatureSteps << " steps)..." << endl;
+        model.denatured = true;
+        for (long long s = 0; s < denatureSteps; s++)
+            runStep("denature", true);
+        model.denatured = false;  // restore coupling for phase 3
+    }
+
+    // Phase 3: main simulation (gradient active, replacement active)
+    if (nsteps > 0) {
+        cout << "Phase 3: main simulation (" << nsteps << " steps)..." << endl;
+        for (long long s = 0; s < nsteps; s++)
+            runStep("main", true);
     }
 
     double simTime = (clock() - startTime) / (double)CLOCKS_PER_SEC;

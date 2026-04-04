@@ -36,12 +36,14 @@ NucleolusModel::NucleolusModel(
                    maxInteractions_, interactionEnergy_, interactionRange_,
                    interactions_),
       columnLength(L_),
-      hasGradient(hasGradient_)
+      hasGradient(hasGradient_),
+      denatured(false)
 {
 }
 
 double NucleolusModel::gamma(double x) const
 {
+    if (denatured) return 0.0;
     if (!hasGradient) return 1.0;
     if (columnLength <= 0.0) return 1.0;
     double g = x / columnLength;
@@ -132,11 +134,26 @@ double NucleolusModel::computePairEnergy(
 
     } else if (normSqd < 4.0 + TOL) {
         // --- Distance 2 ---
+        // Backbone-consecutive pairs stretched to d=2 are forbidden (energy = INF).
+        // This prevents polymers from stretching apart beyond their backbone bond.
+        {
+            double bb = interactions.east[particle1].getVal(particle2);
+            if (bb == Neighbours::cNone)
+                bb = interactions.east[particle2].getVal(particle1);
+            if (bb != Neighbours::cNone) return INF;
+        }
         if (!interactions.weakD2.empty())
             energy += g * interactions.weakD2[id1][id2];
 
     } else {
         // --- Distance sqrt(5) ---
+        // Same: backbone-consecutive pairs forbidden at d=sqrt(5).
+        {
+            double bb = interactions.east[particle1].getVal(particle2);
+            if (bb == Neighbours::cNone)
+                bb = interactions.east[particle2].getVal(particle1);
+            if (bb != Neighbours::cNone) return INF;
+        }
         if (!interactions.weakDsq5.empty())
             energy += g * interactions.weakDsq5[id1][id2];
     }

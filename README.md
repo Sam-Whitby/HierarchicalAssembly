@@ -108,30 +108,46 @@ is available the component waits in place.
 
 | Flag | Default | Description |
 |---|---|---|
-| `--steps N` | 10000 | Total outer iterations. Each iteration = `N_particles` VMMC move attempts + one removal/replacement check. |
-| `--snapshots N` | 1000 | Number of trajectory frames to save. Frames are written at evenly spaced intervals so the file stays manageable regardless of step count. |
+| `--steps N` | 10000 | Phase 3 (main) iterations. Each iteration = `N_particles` VMMC move attempts + one removal/replacement check. |
+| `--free-steps N` | 0 | Phase 1: run N iterations with assembled initial complexes, no replacement (observe free diffusion). |
+| `--denature-steps N` | 0 | Phase 2: run N iterations with β→0 (all weak bonds = 0, backbone intact), replacement active. |
+| `--snapshots N` | 1000 | Number of trajectory frames to save across all phases. Distributed evenly over total steps. |
 | `--length L` | 60 | Condensate column length in lattice units. |
 | `--width W` | 10 | Column width (y periodic with period W). |
-| `--gradient` | off | Enable the linear chemical gradient. |
+| `--gradient` | off | Enable the linear chemical gradient γ(x) = x/L. |
 | `--stokes` | off | Stokes hydrodynamic drag: diffusion ∝ 1/R per cluster. Without this flag all cluster sizes diffuse equally. |
 | `--phi-sl φ` | 0.2 | Fraction of SL moves (0 = none, 1 = all). |
 | `--phi-rot φ` | 0.2 | Fraction of rotation moves. |
 | `--output PREFIX` | `nucleolus` | Output file prefix → `PREFIX_traj.txt` and `PREFIX_stats.txt`. |
 | `--seed S` | 0 | RNG seed; 0 uses a time-based seed. |
 
+### Simulation phases
+
+The simulation supports three optional sequential phases, controlled by the flags above:
+
+1. **Phase 1 — assembled free diffusion** (`--free-steps N`): starts with 4 assembled copies of the target complex T placed at evenly-spaced x positions within the condensate. No removal/replacement. Bonds and gradient are active. Use this to observe assembled complexes diffusing before any denaturation.
+
+2. **Phase 2 — denaturation** (`--denature-steps N`): sets β→0 globally (equivalent to setting γ=0 everywhere). All weak coupling is zeroed; backbone bonds remain at full strength (≈∞). Replacement is active. Complexes disassemble and individual polymers exit and are reinserted near x=0.
+
+3. **Phase 3 — main simulation** (`--steps N`): normal gradient-coupled dynamics with replacement active. If `--free-steps` or `--denature-steps` were used, phase 3 continues from the denatured state left by phase 2.
+
+If neither `--free-steps` nor `--denature-steps` is given, the simulation starts directly with phase 3 from a denatured (linear chain) initial condition.
+
+Each phase is labelled in the trajectory header (`phase=assembled|denature|main`) and displayed in the animation.
+
 ### Example
 
 ```bash
 ./run_nucleolus \
-    --steps 100000  --snapshots 1000 \
-    --length 40     --width 10       \
-    --gradient      --stokes         \
-    --phi-sl 0.2    --phi-rot 0.2    \
+    --free-steps 5000   --denature-steps 5000 \
+    --steps 100000      --snapshots 1000       \
+    --length 40         --width 10             \
+    --gradient          --stokes               \
+    --phi-sl 0.2        --phi-rot 0.2          \
     --output my_run
 ```
 
-Runs 100 000 iterations, saves 1000 frames to `my_run_traj.txt`, with the
-chemical gradient and Stokes drag enabled.
+Runs 110 000 total iterations: 5 000 free diffusion → 5 000 denaturation → 100 000 main. Saves 1000 frames to `my_run_traj.txt`.
 
 ## Output files
 
@@ -141,14 +157,12 @@ Extended XYZ format. Each frame:
 
 ```
 <N_particles>
-step=S energy=E exited=X L=LL W=WW nCopies=C
+step=S energy=E exited=X L=LL W=WW nCopies=C phase=P
 <id> <poly_type> <x> <y> <copy>
 ...
 ```
 
-The header carries the simulation step, total system energy, cumulative
-exited-complex count, and box parameters, so no separate file is needed for
-time-series plots.
+The header carries the simulation step, total system energy, cumulative exited-complex count, box parameters, and the current simulation phase (`assembled`, `denature`, or `main`). No separate file is needed for time-series plots.
 
 ### `PREFIX_stats.txt` — scalar time series
 

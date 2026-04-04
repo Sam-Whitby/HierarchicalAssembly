@@ -94,6 +94,7 @@ def parse_traj(path):
         L       = float(_kv(hdr, 'L', 60))
         W       = float(_kv(hdr, 'W', 10))
         nCopies = int(_kv(hdr, 'nCopies', 4))
+        phase   = _kv(hdr, 'phase', 'main')
 
         particles = []
         for _ in range(n):
@@ -112,7 +113,7 @@ def parse_traj(path):
 
         frames.append(dict(
             step=step, energy=energy, exited=exited,
-            L=L, W=W, nCopies=nCopies, particles=particles,
+            L=L, W=W, nCopies=nCopies, phase=phase, particles=particles,
         ))
 
     return frames
@@ -233,6 +234,17 @@ def main():
     bond_lines = []
     frame_text = ax_anim.text(0.02, 0.97, "", transform=ax_anim.transAxes,
                                fontsize=8, va="top", family="monospace")
+    # Phase label (top-centre of animation panel)
+    _PHASE_COLORS = {"assembled": "#d4efdf", "denature": "#fde8d8", "main": "#d6eaf8"}
+    phase_patch = ax_anim.add_patch(
+        mpatches.FancyBboxPatch((0.5, 0.97), 0.0, 0.0,
+                                boxstyle="round,pad=0.02",
+                                transform=ax_anim.transAxes,
+                                facecolor="#d6eaf8", edgecolor="none",
+                                alpha=0.85, zorder=4, clip_on=False))
+    phase_text = ax_anim.text(0.50, 0.97, "", transform=ax_anim.transAxes,
+                               fontsize=9, va="top", ha="center",
+                               fontweight="bold", zorder=5)
 
     # --- Energy panel ---
     ax_ener.plot(ts_steps, ts_energy, color="#555555", lw=0.8, alpha=0.4,
@@ -285,9 +297,16 @@ def main():
                                        color=_BACKBONE_COLOR, lw=_BOND_LW, zorder=2)
                     bond_lines.append(ln)
 
+        phase = fr.get('phase', 'main')
+        phase_label = {"assembled": "Phase 1: free diffusion",
+                       "denature":  "Phase 2: denaturation",
+                       "main":      "Phase 3: assembly"}.get(phase, phase)
         frame_text.set_text(
             f"step {fr['step']}  E={fr['energy']:.1f}  exited={fr['exited']}"
         )
+        phase_text.set_text(phase_label)
+        phase_text.set_color({"assembled": "#1d8348", "denature": "#a04000",
+                               "main": "#1a5276"}.get(phase, "black"))
 
         # Update scalar plot markers
         s = fr['step']
@@ -296,7 +315,7 @@ def main():
         exits_marker.set_data([s], [fr['exited']])
         exits_vline.set_xdata([s, s])
 
-        return [scat, frame_text, ener_marker, ener_vline,
+        return [scat, frame_text, phase_text, ener_marker, ener_vline,
                 exits_marker, exits_vline] + bond_lines
 
     ani = animation.FuncAnimation(
