@@ -250,14 +250,19 @@ static void placeAssembled(vector<Particle>& particles,
         particles[i].orientation[1] = 0.0;
     }
 
-    int y_offset = (W >= 4) ? (W - 4) / 2 : 0;
-
+    // Place copies in a row: copy c at x = c*(N_SEG+1), y = 0.
+    // Each 4×4 complex occupies x ∈ [c*5, c*5+3] — separated by a gap of 1
+    // in x, so no two copies ever share a lattice site or have overlapping
+    // interaction ranges (min inter-copy distance = 1 > sqrt(5)/2 would be
+    // too close, but gap=1 means nearest cross-copy distance = 1 which is
+    // allowed — they are NOT backbone-connected so they interact normally).
+    // A gap of 2 guarantees no direct d=1 contact between copies; use gap=2.
     for (int c = 0; c < nCopies; c++) {
-        int x_offset = 2 + c * 6;  // non-overlapping 4×4 blocks with a gap of 2
+        int x_offset = c * (N_SEG + 2);  // gap of 2 between 4-wide complexes → stride=6
         for (int lid = 0; lid < N0; lid++) {
             int gi = c * N0 + lid;
             double px = (double)(x_offset + TARGET_X[lid]);
-            double py = (double)((y_offset + TARGET_Y[lid]) % W);
+            double py = (double)(TARGET_Y[lid] % W);
             particles[gi].position[0] = px;
             particles[gi].position[1] = py;
             box.periodicBoundaries(particles[gi].position);
@@ -516,6 +521,14 @@ int main(int argc, char** argv)
         }
     }
 
+    // Target complex is 4 particles tall; column must be at least that wide.
+    if (W < N_SEG) {
+        cerr << "[ERROR] --width " << W << " is less than " << N_SEG
+             << " (the height of one polymer in the target complex). "
+             << "A complex can never exist in this column. Increase --width.\n";
+        return 1;
+    }
+
     long long totalSteps = freeSteps + denatureSteps + nsteps;
     // Clamp snapshots; distribute evenly over total simulation
     if (nsnaps > totalSteps + 1) nsnaps = totalSteps + 1;
@@ -540,7 +553,10 @@ int main(int argc, char** argv)
 
     const unsigned int dimension       = 2;
     const double interactionRange      = 2.5;  // covers d=1,√2,2,√5
-    const unsigned int maxInteractions = 30;
+    // maxInteractions must be large enough for the densest possible neighbourhood.
+    // With a narrow column (small W), the cell-list neighbourhood can cover the
+    // entire y-extent, so all nParticles-1 other particles may appear as candidates.
+    const unsigned int maxInteractions = (unsigned int)(nParticles);
     const double interactionEnergy     = 0.0;
     const bool isLattice               = true;
 
