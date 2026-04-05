@@ -226,7 +226,7 @@ namespace vmmc
 #ifdef ISOTROPIC
         //std::cout << " (isotropic)";
 #endif
-        std::cout << ".\nseed\t" << rng.getSeed() << '\n'; // **MHC -- uncomment
+        std::cout << ".\n"; // seed printed after any external setSeed() call
 
         // Print version info.
 #ifdef COMMIT
@@ -917,12 +917,7 @@ namespace vmmc
                     // Make sure link hasn't been tested already.
                     if (!particles[neighbour].isMoving)
                     {
-                        // SL mode: if a particle of the same type is already in the cluster,
-                        // treat this neighbour as environment (do not link it in).
-                        if (isSLMove && slN0 > 1 && slTypeInCluster[(int)neighbour % slN0])
-                            continue;
-
-                        // Pre-move pair energy.
+                        // Pre-move pair energy (needed before SL check below).
 #ifndef ISOTROPIC
                         double initialEnergy = callbacks.pairEnergyCallback(particle,
                             &particles[particle].preMovePosition[0], &particles[particle].preMoveOrientation[0],
@@ -931,6 +926,15 @@ namespace vmmc
                         double initialEnergy = callbacks.pairEnergyCallback(particle, &particles[particle].preMovePosition[0],
                             neighbour, &particles[neighbour].preMovePosition[0]);
 #endif
+
+                        // SL mode: if a particle of the same type is already in the cluster,
+                        // skip this link only when the current interaction is repulsive or zero.
+                        // Attractive interactions (initialEnergy < 0, e.g. backbone bonds at -1000)
+                        // must always be recruited normally so that backbone partners are never
+                        // silently abandoned, which would allow unphysical bond-breaking.
+                        if (isSLMove && slN0 > 1 && slTypeInCluster[(int)neighbour % slN0]
+                                && initialEnergy >= 0.0)
+                            continue;
 
                         // Post-move pair energy.
 #ifndef ISOTROPIC

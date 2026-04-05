@@ -645,8 +645,10 @@ int main(int argc, char** argv)
     // Stokes: set hydrAlpha = 0 to disable (unit diffusion), 1 to enable
     vmmc.hydrAlpha = useStokes ? 1.0 : 0.0;
 
-    // Set RNG seed
+    // Set RNG seed (seed=0 means use the time-based default from the constructor)
     if (seed != 0) vmmc.rng.setSeed(seed);
+    cout << "RNG seed: " << vmmc.rng.getSeed()
+         << (seed == 0 ? "  (random; use --seed N for reproducibility)" : "") << endl;
 
     // --- Open output files ---
     string trajFile  = outPrefix + "_traj.txt";
