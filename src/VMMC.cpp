@@ -279,6 +279,59 @@ namespace vmmc
         // Propose a move for the cluster.
         proposeMove();
 
+        // Backbone bond safety check.
+        // The cutOff mechanism can prevent backbone partners more than one link
+        // from the seed from being evaluated for frustrated links, allowing those
+        // bonds to be silently broken.  For every moving particle we check all
+        // non-moving neighbours (found using the pre-move cell list, which is
+        // consistent with the current particle positions).  If any post-move pair
+        // energy is effectively infinite (backbone bond broken) we abort the move.
+        if (!isEarlyExit)
+        {
+            // Backbone bond safety check.
+            // For every moving particle pi, check all neighbours (moving or not).
+            // Use postMovePosition for moving neighbours: for the rotation seed this
+            // equals preMovePosition (it stays put), so a backbone partner that rotates
+            // far away from the seed is correctly identified.
+            for (unsigned int m = 0; m < nMoving && !isEarlyExit; m++)
+            {
+                unsigned int pi = moveList[m];
+                unsigned int pairInteractions[maxInteractions];
+#ifndef ISOTROPIC
+                unsigned int nPairs = callbacks.interactionsCallback(pi,
+                    &particles[pi].preMovePosition[0],
+                    &particles[pi].preMoveOrientation[0], pairInteractions);
+#else
+                unsigned int nPairs = callbacks.interactionsCallback(pi,
+                    &particles[pi].preMovePosition[0], pairInteractions);
+#endif
+                for (unsigned int k = 0; k < nPairs && !isEarlyExit; k++)
+                {
+                    unsigned int nbr = pairInteractions[k];
+                    // Choose neighbour position: if nbr is moving use its postMovePosition
+                    // (valid because initiateParticle always calls computePostMoveParticle);
+                    // otherwise use preMovePosition (nbr is static).
+                    const double* nbrPos = particles[nbr].isMoving
+                        ? &particles[nbr].postMovePosition[0]
+                        : &particles[nbr].preMovePosition[0];
+#ifndef ISOTROPIC
+                    const double* nbrOri = particles[nbr].isMoving
+                        ? &particles[nbr].postMoveOrientation[0]
+                        : &particles[nbr].preMoveOrientation[0];
+                    double e = callbacks.pairEnergyCallback(pi,
+                        &particles[pi].postMovePosition[0],
+                        &particles[pi].postMoveOrientation[0],
+                        nbr, nbrPos, nbrOri);
+#else
+                    double e = callbacks.pairEnergyCallback(pi,
+                        &particles[pi].postMovePosition[0],
+                        nbr, nbrPos);
+#endif
+                    if (e > 1e8) isEarlyExit = true;
+                }
+            }
+        }
+
         // Move hasn't been aborted.
         if (!isEarlyExit)
         {
@@ -1056,16 +1109,12 @@ namespace vmmc
     {
         for (unsigned int i=0;i<vec.size();i++)
         {
-            if (vec[i] < 0)
+            // Use floor-based modulo to handle positions outside [0, boxSize) by any amount.
+            // The single +/- boxSize approach fails when clusterPosition drift from repeated
+            // minimum-image accumulation causes postMovePosition to be off by >1 box length.
+            if (vec[i] < 0 || vec[i] >= boxSize[i])
             {
-                vec[i] += boxSize[i];
-            }
-            else
-            {
-                if (vec[i] >= boxSize[i])
-                {
-                    vec[i] -= boxSize[i];
-                }
+                vec[i] -= boxSize[i] * std::floor(vec[i] / boxSize[i]);
             }
         }
     }

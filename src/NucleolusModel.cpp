@@ -81,6 +81,27 @@ double NucleolusModel::computePairEnergy(
                                                    particle2, position2, orientation2);
     }
 
+    // Check for backbone (Triple-based) BEFORE the range cutoff.
+    // During a cluster rotation, a backbone partner that hasn't yet been recruited
+    // can end up arbitrarily far away. Without this check, the pair would return 0
+    // (no interaction) instead of INF, making the break look costless to VMMC.
+    {
+        double bb = interactions.east[particle1].getVal(particle2);
+        if (bb == Neighbours::cNone)
+            bb = interactions.east[particle2].getVal(particle1);
+        if (bb == Neighbours::cNone)
+            bb = interactions.north[particle1].getVal(particle2);
+        if (bb == Neighbours::cNone)
+            bb = interactions.north[particle2].getVal(particle1);
+        if (bb != Neighbours::cNone) {
+            // Backbone pair: must be at d=1 or d=sqrt(2). Any other distance is forbidden.
+            if (normSqd < 1.0 + TOL || normSqd < 2.0 + TOL)
+                return -bb;   // normal bonded energy (unscaled)
+            else
+                return INF;   // stretched or compressed beyond allowed range
+        }
+    }
+
     // Beyond sqrt(5) range: no interaction.
     if (normSqd > 5.0 + TOL) return 0.0;
 

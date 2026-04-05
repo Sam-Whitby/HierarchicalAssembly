@@ -395,6 +395,7 @@ static int buildComponents(NucleolusModel& model,
     return nfrag;
 }
 
+
 // ============================================================
 //  Check exit condition and perform remove/replace.
 //  Returns number of complexes removed this step.
