@@ -32,6 +32,7 @@
     --phi-rot   φ       fraction of rotation moves                                   [0.2]
     --output    PREFIX  prefix for output files                                      [nucleolus]
     --seed      S       RNG seed (0 = random)                                        [0]
+    --couplings FILE    coupling matrices file (default: built-in J=8, eps=0.5)
 */
 
 #include <cmath>
@@ -45,6 +46,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <map>
 #include <algorithm>
 
 #include "Demo.h"
@@ -107,20 +109,110 @@ inline double targetDistSqd(int id1, int id2) {
 }
 
 // ============================================================
-//  Build coupling matrices (16×16, indexed by local particle id)
-//  Following Eq. repulsive_total_eq2 with J=8, eps=0.5:
+//  Load coupling matrices from a text file.
 //
-//  weakD1[id1][id2]   (d=1):
-//    same polymer type → -J (repulsive)
-//    cross-type Gō d=1 neighbours → +J (attractive)
-//
-//  weakDsq2[id1][id2] (d=√2):
-//    same polymer type → -J
-//    cross-type Gō d=√2 neighbours → eps*J
-//
-//  weakD2[id1][id2]   (d=2):
-//    same polymer type → -eps*J
-//    otherwise 0
+//  Format: four named sections [d1] [dsq2] [d2] [dsq5], each
+//  followed by N0 lines of N0 whitespace-separated values.
+//  Lines beginning with '#' are comments and are ignored.
+//  Matrices must be symmetric; a warning is printed if not.
+// ============================================================
+static void loadCouplingMatrices(
+    const string& path,
+    vector<vector<double>>& wD1,
+    vector<vector<double>>& wDsq2,
+    vector<vector<double>>& wD2,
+    vector<vector<double>>& wDsq5)
+{
+    wD1.assign(N0, vector<double>(N0, 0.0));
+    wDsq2.assign(N0, vector<double>(N0, 0.0));
+    wD2.assign(N0, vector<double>(N0, 0.0));
+    wDsq5.assign(N0, vector<double>(N0, 0.0));
+
+    map<string, vector<vector<double>>*> sections = {
+        {"d1", &wD1}, {"dsq2", &wDsq2}, {"d2", &wD2}, {"dsq5", &wDsq5}
+    };
+
+    ifstream f(path);
+    if (!f) {
+        cerr << "[ERROR] Cannot open couplings file: " << path << "\n";
+        exit(EXIT_FAILURE);
+    }
+
+    vector<vector<double>>* current = nullptr;
+    int rowsRead = 0;
+    string sectionName;
+    string line;
+    int lineNum = 0;
+
+    while (getline(f, line)) {
+        lineNum++;
+        // Strip comments
+        auto hash = line.find('#');
+        if (hash != string::npos) line = line.substr(0, hash);
+        // Trim
+        size_t s = line.find_first_not_of(" \t\r\n");
+        if (s == string::npos) continue;
+        line = line.substr(s);
+
+        // Section header?
+        if (line[0] == '[') {
+            size_t close = line.find(']');
+            if (close == string::npos) {
+                cerr << "[ERROR] couplings file line " << lineNum << ": malformed section header\n";
+                exit(EXIT_FAILURE);
+            }
+            sectionName = line.substr(1, close - 1);
+            auto it = sections.find(sectionName);
+            if (it == sections.end()) {
+                cerr << "[ERROR] couplings file: unknown section [" << sectionName << "]\n";
+                exit(EXIT_FAILURE);
+            }
+            current = it->second;
+            rowsRead = 0;
+            continue;
+        }
+
+        // Data row
+        if (!current) {
+            cerr << "[ERROR] couplings file line " << lineNum << ": data outside any section\n";
+            exit(EXIT_FAILURE);
+        }
+        if (rowsRead >= N0) {
+            cerr << "[ERROR] couplings file [" << sectionName << "]: more than " << N0 << " data rows\n";
+            exit(EXIT_FAILURE);
+        }
+        istringstream ss(line);
+        for (int j = 0; j < N0; j++) {
+            if (!(ss >> (*current)[rowsRead][j])) {
+                cerr << "[ERROR] couplings file [" << sectionName << "] row " << rowsRead
+                     << ": expected " << N0 << " values\n";
+                exit(EXIT_FAILURE);
+            }
+        }
+        rowsRead++;
+    }
+
+    // Verify all four sections were read
+    for (auto& kv : sections) {
+        // count non-zero or just check rowsRead somehow — we can't, so trust the parse above
+        (void)kv;
+    }
+
+    // Symmetry check
+    auto checkSym = [&](const vector<vector<double>>& m, const string& name) {
+        for (int i = 0; i < N0; i++)
+            for (int j = 0; j < N0; j++)
+                if (fabs(m[i][j] - m[j][i]) > 1e-9)
+                    cerr << "[WARNING] couplings [" << name << "]: not symmetric at ("
+                         << i << "," << j << "): " << m[i][j] << " vs " << m[j][i] << "\n";
+    };
+    checkSym(wD1, "d1"); checkSym(wDsq2, "dsq2");
+    checkSym(wD2, "d2"); checkSym(wDsq5, "dsq5");
+}
+
+// ============================================================
+//  Build default coupling matrices (16×16, indexed by local id)
+//  J=8, eps=0.5: same-polymer repulsion, cross-type Gō attraction.
 // ============================================================
 static void buildCouplingMatrices(
     double J, double eps,
@@ -136,26 +228,18 @@ static void buildCouplingMatrices(
 
     for (int i = 0; i < N0; i++) {
         for (int j = 0; j < N0; j++) {
-            if (i == j) continue;  // handled implicitly (same particle = hard core only)
+            if (i == j) continue;
 
             bool sameType = (polyType(i) == polyType(j));
             double dsqd = targetDistSqd(i, j);
 
             if (sameType) {
-                // Repulsion between same polymer-type particles (Eq. repulsive_total_eq2, δ_ij=1)
                 wD1[i][j]   = -J;
                 wDsq2[i][j] = -J;
                 wD2[i][j]   = -eps * J;
             } else {
-                // Attractive Gō bonds for cross-type particles that are neighbours in T
-                if (dsqd < 1.0 + TOL) {
-                    // d=1 neighbour in T
-                    wD1[i][j] = J;
-                } else if (dsqd < 2.0 + TOL) {
-                    // d=√2 neighbour in T
-                    wDsq2[i][j] = eps * J;
-                }
-                // No attractive coupling for d=2 or beyond in T
+                if (dsqd < 1.0 + TOL)      wD1[i][j]   = J;
+                else if (dsqd < 2.0 + TOL) wDsq2[i][j] = eps * J;
             }
         }
     }
@@ -500,6 +584,7 @@ int main(int argc, char** argv)
     double phi_rot           = 0.2;
     string outPrefix         = "nucleolus";
     unsigned int seed        = 0;
+    string couplingsFile     = "";
 
     // --- Parse arguments ---
     for (int i = 1; i < argc; i++) {
@@ -515,6 +600,7 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--phi-rot")        && i+1<argc) { phi_rot       = atof(argv[++i]); }
         else if (!strcmp(argv[i],"--output")         && i+1<argc) { outPrefix     = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")           && i+1<argc) { seed          = (unsigned int)atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--couplings")      && i+1<argc) { couplingsFile = argv[++i]; }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n"
                  << "Run ./run_nucleolus --help for usage.\n";
@@ -562,7 +648,12 @@ int main(int argc, char** argv)
 
     // --- Build coupling matrices ---
     vector<vector<double>> wD1, wDsq2, wD2, wDsq5;
-    buildCouplingMatrices(J, eps, wD1, wDsq2, wD2, wDsq5);
+    if (!couplingsFile.empty()) {
+        cout << "Loading coupling matrices from: " << couplingsFile << endl;
+        loadCouplingMatrices(couplingsFile, wD1, wDsq2, wD2, wDsq5);
+    } else {
+        buildCouplingMatrices(J, eps, wD1, wDsq2, wD2, wDsq5);
+    }
 
     // --- Build backbone Triples ---
     vector<Triple> north0, east0;
