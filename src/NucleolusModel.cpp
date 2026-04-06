@@ -4,8 +4,14 @@
   Implementation of the NucleolusModel class.  The pair energy is identical
   to StickySquare::computePairEnergy except that all weak-coupling matrix
   terms (weakD1, weakDsq2, weakD2, weakDsq5) are multiplied by
-  γ(x_i) * γ(x_j) so that bonds are effectively absent near the condensate
-  core (x ≈ 0) and fully active outside (x ≥ L).
+  γ(x_mid) where x_mid is the x-coordinate of the midpoint of the bond
+  under the minimum-image convention:
+      x_mid = x_i - sep_x/2
+  where sep = minimum_image(pos_i - pos_j).
+
+  This ensures γ = 0 at the condensate entry (x = 0) and γ = 1 at x ≥ L,
+  with the screening evaluated at the bond centre rather than at individual
+  particle positions.
 
   Backbone bonds (strong intra-polymer Triples, magnitude ≈ 1000) are left
   unscaled so that polymer connectivity is maintained everywhere.
@@ -110,7 +116,11 @@ double NucleolusModel::computePairEnergy(
     int id2 = (int)particle2 % n0;
 
     // Gradient scale factor for weak coupling.
-    double g = gamma(position1[0]) * gamma(position2[0]);
+    // γ is evaluated at the bond midpoint: x_mid = x_i - sep_x/2
+    // (sep is already the minimum-image vector from particle2 to particle1,
+    //  so x_mid = position1[0] - sep[0]/2).
+    double x_mid = position1[0] - sep[0] / 2.0;
+    double g = gamma(x_mid);
 
     double energy = 0.0;
 

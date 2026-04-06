@@ -131,11 +131,12 @@ public:
     //! Get the number of neighbours per cell.
     unsigned int getNeighbours() const;
 
+    unsigned int maxParticles;                  //!< Maximum number of particles per cell (public so callers can override).
+
 private:
     unsigned int dimension;                     //!< Dimension of the simulation box.
     unsigned int nCells;                        //!< Total number of cells.
     unsigned int nNeighbours;                   //!< Number of neighbours per cell.
-    unsigned int maxParticles;                  //!< Maximum number of particles per cell.
     std::vector<unsigned int> cellsPerAxis;     //!< Number of cells per axis.
     std::vector<double> cellSpacing;            //!< Spacing between cells.
 };

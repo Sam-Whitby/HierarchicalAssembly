@@ -684,6 +684,15 @@ int main(int argc, char** argv)
     CellList cells;
     cells.setDimension(dimension);
     cells.initialise(box.boxSize, interactionRange);
+    // With a narrow column the cell list may have only 3 y-cells, so the
+    // 3x3 neighbourhood covers the whole column and a single cell can hold
+    // all nParticles.  Bump maxParticles and resize every cell buffer so
+    // the overflow check never fires spuriously.
+    if (cells.maxParticles < (unsigned int)nParticles)
+        cells.maxParticles = (unsigned int)nParticles;
+    for (auto& cell : cells)
+        if (cell.particles.size() < cells.maxParticles)
+            cell.particles.resize(cells.maxParticles);
 
     // --- Particles ---
     vector<Particle> particles(nParticles);
@@ -694,10 +703,12 @@ int main(int argc, char** argv)
                           interactions, (double)L_col, useGradient);
 
     // --- Compute energy baseline from the fully assembled state ---
-    // Always place assembled first to get the reference energy (E=0 at step 0
-    // when starting assembled; backbone contribution cancels out of all plots).
+    // Baseline is computed with gradient OFF (γ=1 everywhere) so that E=0 at
+    // step 0 regardless of where the assembled complexes sit in x.
     placeAssembled(particles, cells, box, nCopies, W, L_col);
+    model.hasGradient = false;
     double baselineEnergy = model.getEnergy() * nParticles;
+    model.hasGradient = useGradient;  // restore to requested setting
 
     // Now set the actual initial state for the simulation
     if (!(freeSteps > 0 || denatureSteps > 0)) {
@@ -813,15 +824,19 @@ int main(int argc, char** argv)
         }
     };
 
-    // Phase 1: assembled free diffusion (no replacement, gradient/coupling active)
+    // Phase 1: assembled free diffusion — gradient OFF (γ=1 everywhere, full bonding).
+    // The purpose is to let the assembled complex diffuse freely before the gradient
+    // is introduced; having the gradient on here would suppress bonds near x=0.
     if (freeSteps > 0) {
-        cout << "Phase 1: assembled free diffusion (" << freeSteps << " steps)..." << endl;
-        model.denatured = false;
+        cout << "Phase 1: assembled free diffusion (" << freeSteps << " steps, gradient off)..." << endl;
+        model.hasGradient = false;
+        model.denatured   = false;
         for (long long s = 0; s < freeSteps; s++)
             runStep("assembled", false);
+        model.hasGradient = useGradient;  // restore for subsequent phases
     }
 
-    // Phase 2: denaturation (β→0: γ=0 disables all weak coupling; backbone intact)
+    // Phase 2: denaturation (β→0: γ=0 everywhere, all weak coupling zeroed; backbone intact).
     if (denatureSteps > 0) {
         cout << "Phase 2: denaturation (" << denatureSteps << " steps)..." << endl;
         model.denatured = true;
@@ -830,7 +845,7 @@ int main(int argc, char** argv)
         model.denatured = false;  // restore coupling for phase 3
     }
 
-    // Phase 3: main simulation (gradient active, replacement active)
+    // Phase 3: main simulation — gradient on if --gradient was passed.
     if (nsteps > 0) {
         cout << "Phase 3: main simulation (" << nsteps << " steps)..." << endl;
         for (long long s = 0; s < nsteps; s++)
