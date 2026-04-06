@@ -529,11 +529,20 @@ namespace vmmc
                 if (moveParams.isRotation)
 #endif
                 {
-                    // Initialise neighbouring particle.
-                    initiateParticle(neighbour, particles[moveParams.seed]);
+                    // SL check for the rotation pivot: if its type is already in the
+                    // cluster (same type as seed), abort rather than adding a second
+                    // particle of that type, which would violate the SL size limit.
+                    if (isSLMove && slN0 > 1 && slTypeInCluster[(int)neighbour % slN0])
+                        isEarlyExit = true;
 
-                    // Recursively recruit neighbours to the cluster.
-                    recursiveMoveAssignment(neighbour);
+                    if (!isEarlyExit)
+                    {
+                        // Initialise neighbouring particle.
+                        initiateParticle(neighbour, particles[moveParams.seed]);
+
+                        // Recursively recruit neighbours to the cluster.
+                        recursiveMoveAssignment(neighbour);
+                    }
                 }
                 else
                 {
@@ -981,12 +990,15 @@ namespace vmmc
 #endif
 
                         // SL mode: if a particle of the same type is already in the cluster,
-                        // skip this link only when the current interaction is repulsive or zero.
-                        // Attractive interactions (initialEnergy < 0, e.g. backbone bonds at -1000)
-                        // must always be recruited normally so that backbone partners are never
-                        // silently abandoned, which would allow unphysical bond-breaking.
-                        if (isSLMove && slN0 > 1 && slTypeInCluster[(int)neighbour % slN0]
-                                && initialEnergy >= 0.0)
+                        // skip this link unconditionally.
+                        //
+                        // Backbone bonds (initialEnergy ≈ -1000) are NOT exempted here.
+                        // If a backbone partner's type slot is already filled (by a particle
+                        // from a different complex), skipping it is correct: the backbone
+                        // safety check in step() will detect that the moving particle would
+                        // separate from its backbone partner and reject the move via
+                        // isEarlyExit, so the bond is never actually broken.
+                        if (isSLMove && slN0 > 1 && slTypeInCluster[(int)neighbour % slN0])
                             continue;
 
                         // Post-move pair energy.

@@ -843,6 +843,7 @@ int main(int argc, char** argv)
     cout << "Acceptance ratio: "
          << (double)vmmc.getAccepts() / (double)vmmc.getAttempts() << endl;
 
+
     fclose(fp_traj);
     fclose(fp_stat);
 
