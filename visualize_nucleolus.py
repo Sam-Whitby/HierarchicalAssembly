@@ -62,7 +62,7 @@ def _kv(header, key, default=None):
 def parse_traj(path):
     """
     Return a list of frame dicts, each with:
-        step, energy, exited, L, W, nCopies,
+        step, energy, exited, exitedMass, exitedPerfect, L, W, nCopies, phase,
         particles: list of (id, poly_type, x, y, copy)
     """
     frames = []
@@ -88,13 +88,15 @@ def parse_traj(path):
         hdr = lines[i].strip()
         i += 1
 
-        step    = int(_kv(hdr, 'step', 0))
-        energy  = float(_kv(hdr, 'energy', 0.0))
-        exited  = int(_kv(hdr, 'exited', 0))
-        L       = float(_kv(hdr, 'L', 60))
-        W       = float(_kv(hdr, 'W', 10))
-        nCopies = int(_kv(hdr, 'nCopies', 4))
-        phase   = _kv(hdr, 'phase', 'main')
+        step          = int(_kv(hdr, 'step', 0))
+        energy        = float(_kv(hdr, 'energy', 0.0))
+        exited        = int(_kv(hdr, 'exited', 0))
+        exitedMass    = int(_kv(hdr, 'exitedMass', 0))
+        exitedPerfect = int(_kv(hdr, 'exitedPerfect', 0))
+        L             = float(_kv(hdr, 'L', 60))
+        W             = float(_kv(hdr, 'W', 10))
+        nCopies       = int(_kv(hdr, 'nCopies', 4))
+        phase         = _kv(hdr, 'phase', 'main')
 
         particles = []
         for _ in range(n):
@@ -113,6 +115,7 @@ def parse_traj(path):
 
         frames.append(dict(
             step=step, energy=energy, exited=exited,
+            exitedMass=exitedMass, exitedPerfect=exitedPerfect,
             L=L, W=W, nCopies=nCopies, phase=phase, particles=particles,
         ))
 
@@ -147,9 +150,11 @@ def main():
     print(f"  {len(all_frames)} frames total, rendering {len(frames)}.", flush=True)
 
     # Pull time-series for background plots (all frames, not just rendered ones)
-    ts_steps   = [f['step']   for f in all_frames]
-    ts_energy  = [f['energy'] for f in all_frames]
-    ts_exited  = [f['exited'] for f in all_frames]
+    ts_steps         = [f['step']          for f in all_frames]
+    ts_energy        = [f['energy']        for f in all_frames]
+    ts_exited        = [f['exited']        for f in all_frames]
+    ts_exitedMass    = [f['exitedMass']    for f in all_frames]
+    ts_exitedPerfect = [f['exitedPerfect'] for f in all_frames]
 
     # Axis limits from data
     all_x = [p[2] for fr in frames for p in fr['particles']]
@@ -257,15 +262,22 @@ def main():
     ax_ener.tick_params(labelsize=7)
     ax_ener.set_xlim(min(ts_steps), max(ts_steps))
 
-    # --- Exits panel ---
-    ax_exits.plot(ts_steps, ts_exited, color="#555555", lw=0.8, alpha=0.4)
+    # --- Exits panel — two traces: total mass and perfect-complex mass ---
+    # Total exited mass (all particles, each = 1)
+    ax_exits.plot(ts_steps, ts_exitedMass, color="#555555", lw=0.8, alpha=0.4,
+                  label="Total mass")
     exits_marker, = ax_exits.plot([], [], 'o', color="#3cb44b", ms=5, zorder=5)
     exits_vline   = ax_exits.axvline(0, color="#3cb44b", lw=0.8, ls="--", alpha=0.7)
+    # Perfect-complex mass (particles that exited inside a fully formed target T)
+    ax_exits.plot(ts_steps, ts_exitedPerfect, color="#e6a817", lw=1.0, alpha=0.6,
+                  label="Perfect T")
+    perfect_marker, = ax_exits.plot([], [], 's', color="#e6a817", ms=5, zorder=5)
     ax_exits.set_xlabel("Step", fontsize=8)
-    ax_exits.set_ylabel("Count", fontsize=8)
-    ax_exits.set_title("Cumulative exited complexes", fontsize=8)
+    ax_exits.set_ylabel("Particles", fontsize=8)
+    ax_exits.set_title("Cumulative exited mass", fontsize=8)
     ax_exits.tick_params(labelsize=7)
     ax_exits.set_xlim(min(ts_steps), max(ts_steps))
+    ax_exits.legend(fontsize=7, loc="upper left", framealpha=0.7)
 
     # ---------------------------------------------------------------------- #
     # Update function
@@ -302,7 +314,8 @@ def main():
                        "denature":  "Phase 2: denaturation",
                        "main":      "Phase 3: assembly"}.get(phase, phase)
         frame_text.set_text(
-            f"step {fr['step']}  E={fr['energy']:.1f}  exited={fr['exited']}"
+            f"step {fr['step']}  E={fr['energy']:.1f}"
+            f"  mass={fr['exitedMass']}  perfect={fr['exitedPerfect']}"
         )
         phase_text.set_text(phase_label)
         phase_text.set_color({"assembled": "#1d8348", "denature": "#a04000",
@@ -312,11 +325,12 @@ def main():
         s = fr['step']
         ener_marker.set_data([s], [fr['energy']])
         ener_vline.set_xdata([s, s])
-        exits_marker.set_data([s], [fr['exited']])
+        exits_marker.set_data([s], [fr['exitedMass']])
         exits_vline.set_xdata([s, s])
+        perfect_marker.set_data([s], [fr['exitedPerfect']])
 
         return [scat, frame_text, phase_text, ener_marker, ener_vline,
-                exits_marker, exits_vline] + bond_lines
+                exits_marker, exits_vline, perfect_marker] + bond_lines
 
     ani = animation.FuncAnimation(
         fig, update,

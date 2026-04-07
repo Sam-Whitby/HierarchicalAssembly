@@ -486,14 +486,78 @@ static int buildComponents(NucleolusModel& model,
 
 
 // ============================================================
+//  Check whether a component that has exited is a perfect copy of target T.
+//
+//  Criteria:
+//    1. Exactly N0 = 16 particles, one of each local type 0..15.
+//    2. Internal energy (gradient off) equals targetEnergy within ±0.5.
+//       The energy matching guarantees all particles are at the correct
+//       relative positions with all expected bonds present.
+// ============================================================
+static bool isPerfectComplex(NucleolusModel& model,
+                              vector<Particle>& particles,
+                              const vector<int>& comp,
+                              double targetEnergy)
+{
+    if ((int)comp.size() != N0) return false;
+
+    // One of each local type.
+    bool typePresent[N0] = {};
+    for (int gi : comp) {
+        int lid = gi % N0;
+        if (typePresent[lid]) return false;
+        typePresent[lid] = true;
+    }
+    for (int t = 0; t < N0; t++)
+        if (!typePresent[t]) return false;
+
+    // Sum internal pair energies with gradient disabled.
+    bool savedGradient  = model.hasGradient;
+    bool savedDenatured = model.denatured;
+    model.hasGradient  = false;
+    model.denatured    = false;
+
+    double energy = 0.0;
+    bool hardCore = false;
+    for (int a = 0; a < (int)comp.size() && !hardCore; a++) {
+        for (int b = a + 1; b < (int)comp.size() && !hardCore; b++) {
+            int i = comp[a], j = comp[b];
+            double e = model.computePairEnergy(
+                i, &particles[i].position[0], &particles[i].orientation[0],
+                j, &particles[j].position[0], &particles[j].orientation[0]);
+            if (e > 1e5) { hardCore = true; break; }
+            energy += e;
+        }
+    }
+
+    model.hasGradient  = savedGradient;
+    model.denatured    = savedDenatured;
+
+    if (hardCore) return false;
+    return (fabs(energy - targetEnergy) < 0.5);
+}
+
+
+// ============================================================
 //  Check exit condition and perform remove/replace.
-//  Returns number of complexes removed this step.
+//
+//  exitedMass       incremented by comp.size() for every removed component.
+//  exitedPerfectMass incremented by N0 for every perfect complex removed.
+//  fp_exits         receives one log line per removed component (may be NULL).
+//  step             current simulation step (for the log).
+//
+//  Returns number of components removed this step.
 // ============================================================
 static int checkAndReplace(NucleolusModel& model,
                             vector<Particle>& particles,
                             CellList& cells, Box& box,
                             int nCopies, int W, int L_col,
-                            vmmc::VMMC& vmmc)
+                            vmmc::VMMC& vmmc,
+                            double targetComplexEnergy,
+                            long long& exitedMass,
+                            long long& exitedPerfectMass,
+                            FILE* fp_exits,
+                            long long step)
 {
     int nParticles = nCopies * N0;
     vector<int> fragmentID;
@@ -532,8 +596,23 @@ static int checkAndReplace(NucleolusModel& model,
         // Sort by global index so polymer order is preserved
         sort(comp.begin(), comp.end());
 
+        // Classify and log BEFORE placement overwrites positions.
+        bool perfect = isPerfectComplex(model, particles, comp, targetComplexEnergy);
+
+        if (fp_exits) {
+            fprintf(fp_exits, "%lld\t%d\t%d", step, (int)comp.size(), perfect ? 1 : 0);
+            for (int gi : comp)
+                fprintf(fp_exits, "\t%d:%d:%.4f:%.4f",
+                        gi, gi % N0,
+                        particles[gi].position[0],
+                        particles[gi].position[1]);
+            fprintf(fp_exits, "\n");
+        }
+
         if (replacementPlacement(particles, cells, box, comp, W, L_col, vmmc)) {
             nReplaced++;
+            exitedMass        += (long long)comp.size();
+            exitedPerfectMass += perfect ? (long long)N0 : 0LL;
         }
     }
     return nReplaced;
@@ -544,16 +623,25 @@ static int checkAndReplace(NucleolusModel& model,
 //  Header line 2 carries step, energy, cumulative exit count, and box params
 //  so that the visualizer can plot scalar time-series without a separate file.
 //  Columns: particle_id  polymer_type  x  y  copy
+//
+//  exitedMass:    cumulative count of all particles that have exited (each = 1).
+//  exitedPerfect: subset of exitedMass that exited inside a perfect complex.
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double L_col, double W,
-                        long long step, double energy, long long totalExited,
+                        long long step, double energy,
+                        long long totalExited,
+                        long long exitedMass,
+                        long long exitedPerfect,
                         const char* phase = "main")
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
-    fprintf(fp, "step=%lld energy=%.6f exited=%lld L=%.1f W=%.1f nCopies=%d phase=%s\n",
-            step, energy, totalExited, L_col, W, nCopies, phase);
+    fprintf(fp,
+        "step=%lld energy=%.6f exited=%lld exitedMass=%lld exitedPerfect=%lld"
+        " L=%.1f W=%.1f nCopies=%d phase=%s\n",
+        step, energy, totalExited, exitedMass, exitedPerfect,
+        L_col, W, nCopies, phase);
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -709,6 +797,10 @@ int main(int argc, char** argv)
     model.hasGradient = false;
     double baselineEnergy = model.getEnergy() * nParticles;
     model.hasGradient = useGradient;  // restore to requested setting
+    // Energy of a single perfectly-assembled complex (gradient off).
+    // Used by isPerfectComplex() to decide whether an exiting structure
+    // has all particles in the correct relative positions.
+    double targetComplexEnergy = baselineEnergy / (double)nCopies;
 
     // Now set the actual initial state for the simulation
     if (!(freeSteps > 0 || denatureSteps > 0)) {
@@ -772,26 +864,33 @@ int main(int argc, char** argv)
     // --- Open output files ---
     string trajFile  = outPrefix + "_traj.txt";
     string statFile  = outPrefix + "_stats.txt";
+    string exitsFile = outPrefix + "_exits.txt";
 
-    FILE* fp_traj = fopen(trajFile.c_str(), "w");
-    FILE* fp_stat = fopen(statFile.c_str(), "w");
-    if (!fp_traj || !fp_stat) {
+    FILE* fp_traj  = fopen(trajFile.c_str(), "w");
+    FILE* fp_stat  = fopen(statFile.c_str(), "w");
+    FILE* fp_exits = fopen(exitsFile.c_str(), "w");
+    if (!fp_traj || !fp_stat || !fp_exits) {
         cerr << "Cannot open output files.\n";
         return 1;
     }
-    fprintf(fp_stat, "# step  energy  nExited  acceptRatio\n");
+    // Exits log: one tab-separated line per exit event.
+    // Columns: step  nParticles  isPerfect  id:lid:x:y (repeated)
+    fprintf(fp_exits, "# step\tnParticles\tisPerfect\tparticles(id:lid:x:y)...\n");
+    fprintf(fp_stat, "# step  energy  nExited  exitedMass  exitedPerfect  acceptRatio\n");
+
+    // --- Simulation loop (three phases) ---
+    cout << "Starting simulation..." << endl;
+    clock_t startTime         = clock();
+    long long totalExited     = 0;
+    long long totalExitedMass = 0;    // cumulative particles that have exited
+    long long totalExitedPerfect = 0; // subset from perfect complexes
+    long long globalStep      = 0;
 
     // Write initial frame (step 0)
     double initEnergy = model.getEnergy() * nParticles - baselineEnergy;
     const char* initPhase = (freeSteps > 0) ? "assembled" : (denatureSteps > 0 ? "denature" : "main");
-    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0, initPhase);
-    fprintf(fp_stat, "0  %.4f  0  0.0000\n", initEnergy);
-
-    // --- Simulation loop (three phases) ---
-    cout << "Starting simulation..." << endl;
-    clock_t startTime = clock();
-    long long totalExited = 0;
-    long long globalStep  = 0;
+    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0, 0, 0, initPhase);
+    fprintf(fp_stat, "0  %.4f  0  0  0  0.0000\n", initEnergy);
 
     // Helper lambda: run one outer iteration and optionally save a frame.
     auto runStep = [&](const char* phase, bool doReplace) {
@@ -800,7 +899,12 @@ int main(int argc, char** argv)
 
         if (doReplace) {
             int nExited = checkAndReplace(model, particles, cells, box,
-                                           nCopies, W, L_col, vmmc);
+                                           nCopies, W, L_col, vmmc,
+                                           targetComplexEnergy,
+                                           totalExitedMass,
+                                           totalExitedPerfect,
+                                           fp_exits,
+                                           globalStep);
             totalExited += nExited;
         }
 
@@ -810,9 +914,11 @@ int main(int argc, char** argv)
         bool doSave = (globalStep % saveEvery == 0) || (globalStep == totalSteps);
         if (doSave) {
             writeFrame(fp_traj, particles, nCopies, L_col, W,
-                       globalStep, energy, totalExited, phase);
-            fprintf(fp_stat, "%lld  %.4f  %lld  %.4f\n",
-                    globalStep, energy, totalExited, acceptRatio);
+                       globalStep, energy, totalExited,
+                       totalExitedMass, totalExitedPerfect, phase);
+            fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %lld  %.4f\n",
+                    globalStep, energy, totalExited,
+                    totalExitedMass, totalExitedPerfect, acceptRatio);
         }
 
         long long logEvery = max(1LL, totalSteps / 20);
@@ -820,6 +926,7 @@ int main(int argc, char** argv)
             cout << "  [" << phase << "] step " << globalStep << "/" << totalSteps
                  << "  E=" << energy
                  << "  exited=" << totalExited
+                 << "  perfect=" << (totalExitedPerfect / N0)
                  << "  accept=" << acceptRatio << "\n";
         }
     };
@@ -855,15 +962,19 @@ int main(int argc, char** argv)
     double simTime = (clock() - startTime) / (double)CLOCKS_PER_SEC;
     cout << "Done! Time = " << simTime << " s (" << simTime/60 << " min)" << endl;
     cout << "Total exited complexes: " << totalExited << endl;
+    cout << "Total exited mass:      " << totalExitedMass << " particles" << endl;
+    cout << "Perfect complex exits:  " << (totalExitedPerfect / N0)
+         << " complexes (" << totalExitedPerfect << " particles)" << endl;
     cout << "Acceptance ratio: "
          << (double)vmmc.getAccepts() / (double)vmmc.getAttempts() << endl;
 
-
     fclose(fp_traj);
     fclose(fp_stat);
+    fclose(fp_exits);
 
     cout << "Trajectory written to: " << trajFile << endl;
     cout << "Statistics written to:  " << statFile << endl;
+    cout << "Exit events written to: " << exitsFile << endl;
     cout << "\nTo visualize:" << endl;
     cout << "  python3 visualize_nucleolus.py " << trajFile
          << " --gradient-length " << L_col << " --width " << W << endl;
