@@ -490,51 +490,46 @@ static int buildComponents(NucleolusModel& model,
 //
 //  Criteria:
 //    1. Exactly N0 = 16 particles, one of each local type 0..15.
-//    2. Internal energy (gradient off) equals targetEnergy within ±0.5.
-//       The energy matching guarantees all particles are at the correct
-//       relative positions with all expected bonds present.
+//    2. Every pairwise distance in the actual complex equals the
+//       corresponding target-complex distance exactly (to within the
+//       lattice precision of ±0.01 in squared distance).
+//
+//  The geometric test is strict: no scrambled assembly that happens to
+//  have the same total energy can pass — the absolute positions of every
+//  particle relative to every other must match the Moore-curve target.
+//  y is periodic with period W; x is open (particles have already exited).
 // ============================================================
-static bool isPerfectComplex(NucleolusModel& model,
-                              vector<Particle>& particles,
+static bool isPerfectComplex(const vector<Particle>& particles,
                               const vector<int>& comp,
-                              double targetEnergy)
+                              double W)
 {
     if ((int)comp.size() != N0) return false;
 
-    // One of each local type.
-    bool typePresent[N0] = {};
+    // Build local-id → global-id map; reject duplicates or missing types.
+    int lidToGi[N0];
+    fill(lidToGi, lidToGi + N0, -1);
     for (int gi : comp) {
         int lid = gi % N0;
-        if (typePresent[lid]) return false;
-        typePresent[lid] = true;
+        if (lidToGi[lid] != -1) return false;
+        lidToGi[lid] = gi;
     }
     for (int t = 0; t < N0; t++)
-        if (!typePresent[t]) return false;
+        if (lidToGi[t] == -1) return false;
 
-    // Sum internal pair energies with gradient disabled.
-    bool savedGradient  = model.hasGradient;
-    bool savedDenatured = model.denatured;
-    model.hasGradient  = false;
-    model.denatured    = false;
-
-    double energy = 0.0;
-    bool hardCore = false;
-    for (int a = 0; a < (int)comp.size() && !hardCore; a++) {
-        for (int b = a + 1; b < (int)comp.size() && !hardCore; b++) {
-            int i = comp[a], j = comp[b];
-            double e = model.computePairEnergy(
-                i, &particles[i].position[0], &particles[i].orientation[0],
-                j, &particles[j].position[0], &particles[j].orientation[0]);
-            if (e > 1e5) { hardCore = true; break; }
-            energy += e;
+    // Check every pairwise distance against the target geometry.
+    for (int a = 0; a < N0; a++) {
+        for (int b = a + 1; b < N0; b++) {
+            int gi = lidToGi[a], gj = lidToGi[b];
+            double dx = particles[gi].position[0] - particles[gj].position[0];
+            double dy = particles[gi].position[1] - particles[gj].position[1];
+            // Minimum image in y (periodic); x is open.
+            dy -= W * std::round(dy / W);
+            double dsqActual = dx*dx + dy*dy;
+            double dsqTarget = targetDistSqd(a, b);
+            if (fabs(dsqActual - dsqTarget) > 0.01) return false;
         }
     }
-
-    model.hasGradient  = savedGradient;
-    model.denatured    = savedDenatured;
-
-    if (hardCore) return false;
-    return (fabs(energy - targetEnergy) < 0.5);
+    return true;
 }
 
 
@@ -553,7 +548,6 @@ static int checkAndReplace(NucleolusModel& model,
                             CellList& cells, Box& box,
                             int nCopies, int W, int L_col,
                             vmmc::VMMC& vmmc,
-                            double targetComplexEnergy,
                             long long& exitedMass,
                             long long& exitedPerfectMass,
                             FILE* fp_exits,
@@ -597,7 +591,7 @@ static int checkAndReplace(NucleolusModel& model,
         sort(comp.begin(), comp.end());
 
         // Classify and log BEFORE placement overwrites positions.
-        bool perfect = isPerfectComplex(model, particles, comp, targetComplexEnergy);
+        bool perfect = isPerfectComplex(particles, comp, (double)W);
 
         if (fp_exits) {
             fprintf(fp_exits, "%lld\t%d\t%d", step, (int)comp.size(), perfect ? 1 : 0);
@@ -797,10 +791,6 @@ int main(int argc, char** argv)
     model.hasGradient = false;
     double baselineEnergy = model.getEnergy() * nParticles;
     model.hasGradient = useGradient;  // restore to requested setting
-    // Energy of a single perfectly-assembled complex (gradient off).
-    // Used by isPerfectComplex() to decide whether an exiting structure
-    // has all particles in the correct relative positions.
-    double targetComplexEnergy = baselineEnergy / (double)nCopies;
 
     // Now set the actual initial state for the simulation
     if (!(freeSteps > 0 || denatureSteps > 0)) {
@@ -900,7 +890,6 @@ int main(int argc, char** argv)
         if (doReplace) {
             int nExited = checkAndReplace(model, particles, cells, box,
                                            nCopies, W, L_col, vmmc,
-                                           targetComplexEnergy,
                                            totalExitedMass,
                                            totalExitedPerfect,
                                            fp_exits,
