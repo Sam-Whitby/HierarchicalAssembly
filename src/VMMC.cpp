@@ -755,6 +755,67 @@ namespace vmmc
             if (rng() > exp(-excessEnergy)) return false;
         }
 
+        // ---------------------------------------------------------------
+        // Internal-bond Metropolis filter.
+        //
+        // The link-building step (recursiveMoveAssignment) correctly
+        // Boltzmann-weights BOUNDARY bonds (one particle moving, one
+        // static) through the forward/reverse link-weight mechanism.
+        // INTERNAL bonds (both particles moving) are never evaluated in
+        // link-building: the algorithm assumes they are translationally
+        // invariant, which is exact for uniform potentials but fails for
+        // spatially varying ones (e.g. a chemical gradient γ(x_mid)).
+        //
+        // This block computes ΔE_internal = E_post − E_pre over every
+        // moving-moving pair and applies min(1, exp(−ΔE_internal)).
+        // For uniform potentials every term is zero and this is a no-op.
+        //
+        // After swapMoveStatus():
+        //   particles[i].preMovePosition  = NEW (post-move) position
+        //   particles[i].postMovePosition = OLD (pre-move)  position
+        // ---------------------------------------------------------------
+        {
+            double dE_int = 0.0;
+            for (unsigned int a = 0; a < nMoving; a++)
+            {
+                unsigned int pi = moveList[a];
+                for (unsigned int b = a + 1; b < nMoving; b++)
+                {
+                    unsigned int pj = moveList[b];
+#ifndef ISOTROPIC
+                    double ePost = callbacks.pairEnergyCallback(pi,
+                        &particles[pi].preMovePosition[0],
+                        &particles[pi].preMoveOrientation[0],
+                        pj,
+                        &particles[pj].preMovePosition[0],
+                        &particles[pj].preMoveOrientation[0]);
+                    double ePre  = callbacks.pairEnergyCallback(pi,
+                        &particles[pi].postMovePosition[0],
+                        &particles[pi].postMoveOrientation[0],
+                        pj,
+                        &particles[pj].postMovePosition[0],
+                        &particles[pj].postMoveOrientation[0]);
+#else
+                    double ePost = callbacks.pairEnergyCallback(pi,
+                        &particles[pi].preMovePosition[0],
+                        pj,
+                        &particles[pj].preMovePosition[0]);
+                    double ePre  = callbacks.pairEnergyCallback(pi,
+                        &particles[pi].postMovePosition[0],
+                        pj,
+                        &particles[pj].postMovePosition[0]);
+#endif
+                    // Skip non-interacting pairs (saves time and avoids
+                    // floating-point noise from 0 − 0).
+                    if (ePre > 1e5 || ePost > 1e5) continue;
+                    if (std::abs(ePost) < 1e-9 && std::abs(ePre) < 1e-9) continue;
+                    dE_int += ePost - ePre;
+                }
+            }
+            // Apply Metropolis only when the move is energetically unfavourable.
+            if (dE_int > 0.0 && rng() > std::exp(-dE_int)) return false;
+        }
+
         // Move successful.
         return true;
     }

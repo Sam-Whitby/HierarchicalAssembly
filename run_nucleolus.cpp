@@ -932,14 +932,14 @@ int main(int argc, char** argv)
     };
 
     // Phase 1: assembled free diffusion — gradient OFF (γ=1 everywhere, full bonding).
-    // The purpose is to let the assembled complex diffuse freely before the gradient
-    // is introduced; having the gradient on here would suppress bonds near x=0.
+    // Replacement is active: complexes that diffuse past x=L are removed and
+    // reinserted as denatured chains near x=0, identical to Phase 3 behaviour.
     if (freeSteps > 0) {
         cout << "Phase 1: assembled free diffusion (" << freeSteps << " steps, gradient off)..." << endl;
         model.hasGradient = false;
         model.denatured   = false;
         for (long long s = 0; s < freeSteps; s++)
-            runStep("assembled", false);
+            runStep("assembled", true);
         model.hasGradient = useGradient;  // restore for subsequent phases
     }
 

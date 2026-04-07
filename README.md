@@ -102,6 +102,8 @@ Each outer iteration performs `nParticles` VMMC move attempts. Two move types:
 
 **Backbone safety check**: after every cluster proposal (before acceptance), every moving particle checks its post-move position against all neighbours (moving and non-moving) using post-move positions. If any backbone-consecutive pair would end up at a non-bonded distance, the move is aborted.
 
+**Internal-bond Metropolis filter**: after the cluster is built and the boundary-bond frustrated-link check passes, the energy change of all moving-moving pair interactions is computed and a Metropolis acceptance step `min(1, exp(−ΔE_internal))` is applied. This is necessary for exact detailed balance whenever the pair potential is spatially varying (as it is when `--gradient` is on): the boundary-bond link-building correctly Boltzmann-weights the energy change of bonds between moving and static particles, but bonds between two moving particles are not otherwise weighted. For uniform potentials (gradient off) every internal bond energy change is zero and the filter has no effect.
+
 ---
 
 ## CLI flags
@@ -113,7 +115,7 @@ Each outer iteration performs `nParticles` VMMC move attempts. Two move types:
 | Flag | Default | Description |
 |---|---|---|
 | `--steps N` | 10000 | Phase 3 (main) outer iterations |
-| `--free-steps N` | 0 | Phase 1: assembled initial state, no replacement |
+| `--free-steps N` | 0 | Phase 1: assembled initial state, replacement active |
 | `--denature-steps N` | 0 | Phase 2: all weak bonds = 0, backbone intact, replacement active |
 | `--snapshots N` | 1000 | Frames to save across all phases |
 | `--length L` | 60 | Column length (lattice units) |
@@ -128,7 +130,7 @@ Each outer iteration performs `nParticles` VMMC move attempts. Two move types:
 
 ### Three-phase protocol
 
-1. **Phase 1 — assembled free diffusion** (`--free-steps N`): 4 assembled copies of T placed at x = 0, 6, 12, 18. No replacement.
+1. **Phase 1 — assembled free diffusion** (`--free-steps N`): 4 assembled copies of T placed at x = 0, 6, 12, 18. Gradient is off (γ = 1 everywhere, full bonding). Replacement active: components that exit the column are re-inserted as denatured chains near x = 0.
 2. **Phase 2 — denaturation** (`--denature-steps N`): β → 0 (weak bonds zeroed, backbone intact). Replacement active.
 3. **Phase 3 — main** (`--steps N`): gradient-coupled dynamics, replacement active.
 
@@ -139,12 +141,19 @@ Each outer iteration performs `nParticles` VMMC move attempts. Two move types:
 **`PREFIX_traj.txt`** — extended XYZ trajectory:
 ```
 <N>
-step=S energy=E exited=X L=LL W=WW nCopies=C phase=P
+step=S energy=E exited=X exitedMass=M exitedPerfect=P L=LL W=WW nCopies=C phase=Ph
 <id> <poly_type> <x> <y> <copy>
 ...
 ```
+`exitedMass` = cumulative count of all particles that have left the column (each particle = 1 mass unit).  `exitedPerfect` = subset of `exitedMass` that departed inside a structure identified as a perfect copy of target T.
 
-**`PREFIX_stats.txt`** — scalar time series: `step  energy  nExited  acceptRatio`
+**`PREFIX_stats.txt`** — scalar time series: `step  energy  nExited  exitedMass  exitedPerfect  acceptRatio`
+
+**`PREFIX_exits.txt`** — one tab-separated line per exit event:
+```
+step  nParticles  isPerfect  id:lid:x:y  id:lid:x:y  ...
+```
+`isPerfect = 1` when the exiting structure is a perfect copy of target T (all 16 local types present and internal energy matches the reference within ±0.5 energy units).
 
 ---
 
@@ -154,7 +163,7 @@ step=S energy=E exited=X L=LL W=WW nCopies=C phase=P
 python3 visualize_nucleolus.py PREFIX_traj.txt --gradient-length L --width W
 ```
 
-Opens an animated 3-panel figure: particle positions (left), energy vs step (top right), cumulative exited complexes vs step (bottom right).
+Opens an animated 3-panel figure: particle positions (left), energy vs step (top right), cumulative exited mass vs step (bottom right, two traces: total mass in grey and perfect-complex mass in gold).
 
 ```bash
 # Save as video
